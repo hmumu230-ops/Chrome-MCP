@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { font: 13px/1.5 -apple-system, "Segoe UI", sans-serif; width: 280px; padding: 12px; margin: 0; }
+  h1 { font-size: 14px; margin: 0 0 8px; }
+  .status { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: #ccc; }
+  .dot.on { background: #1a7f37; }
+  .dot.off { background: #cf222e; }
+  code { background: #f6f8fa; padding: 1px 4px; border-radius: 3px; font-size: 11px; }
+  button { margin-top: 8px; padding: 4px 10px; cursor: pointer; }
+  .url { word-break: break-all; }
+</style>
+</head>
+<body>
+  <h1>Chrome MCP</h1>
+  <div class="status"><span id="dot" class="dot"></span><span id="state">checking…</span></div>
+  <div class="url">MCP endpoint: <code id="ep">http://127.0.0.1:7890/mcp</code></div>
+  <button id="re">Reconnect</button>
+  <script src="popup.js"></script>
+</body>
+</html>

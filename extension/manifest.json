@@ -1,0 +1,35 @@
+{
+  "manifest_version": 3,
+  "minimum_chrome_version": "116",
+  "name": "Chrome MCP",
+  "version": "0.1.0",
+  "description": "Exposes this browser as MCP tools to any MCP client via a local HTTP bridge (default http://127.0.0.1:7890/mcp).",
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "permissions": [
+    "tabs",
+    "scripting",
+    "debugger",
+    "webNavigation",
+    "cookies",
+    "downloads",
+    "alarms"
+  ],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Chrome MCP",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  }
+}

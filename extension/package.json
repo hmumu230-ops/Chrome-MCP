@@ -1,0 +1,5 @@
+{
+  "type": "module",
+  "private": true,
+  "description": "Marker so node --check parses extension JS as ESM. Chrome ignores this file."
+}
