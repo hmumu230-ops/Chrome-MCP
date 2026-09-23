@@ -17,6 +17,8 @@ export const miscTools = {
   },
 
   async set_cookie({ pageId, name, value, path, domain, secure, httpOnly, sameSite, expirationDate }) {
+    if (typeof name !== 'string' || name === '') throw new Error('cookie name must be a non-empty string');
+    if (value !== undefined && typeof value !== 'string') throw new Error('cookie value must be a string');
     const tab = await chrome.tabs.get(pageId);
     const c = await chrome.cookies.set({
       url: tab.url, name, value, path, domain, secure, httpOnly, sameSite, expirationDate,
@@ -51,8 +53,11 @@ export const miscTools = {
     // Fetch from the extension's service worker: carries the browser's cookies
     // (credentials: 'include') and is not subject to page CORS — the extension
     // has <all_urls> host permission. Handy for API debugging with live sessions.
+    // http/https only — file:// would exfiltrate local files (LFI), chrome:// etc. are meaningless.
+    if (!/^https?:\/\//i.test(String(url || ''))) throw new Error('http_request only accepts http(s) URLs');
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), timeout || 30000);
+    const ms = Math.max(1000, Math.min(Number(timeout) || 30000, 300000));
+    const timer = setTimeout(() => ctrl.abort(), ms);
     try {
       const res = await fetch(url, {
         method: method || 'GET',
@@ -77,6 +82,8 @@ export const miscTools = {
 
   async download_file({ url, filename, conflictAction }) {
     // Direct download into the browser's Downloads dir via chrome.downloads.
+    // http/https/data only — file:// would copy arbitrary local files (LFI).
+    if (!/^(?:https?|data):/i.test(String(url || ''))) throw new Error('download_file only accepts http(s)/data URLs');
     const id = await chrome.downloads.download({
       url, filename, conflictAction: conflictAction || 'uniquify', saveAs: false,
     });

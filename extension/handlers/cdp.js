@@ -69,7 +69,18 @@ async function sweepAndAttach(tabId) {
   await chrome.debugger.attach({ tabId }, '1.3');
 }
 
-export async function ensureDebugger(tabId, domains = []) {
+// Serialize attach attempts per tab — parallel first-attaches race and a
+// losing sweepAndAttach detaches a sibling's in-flight session.
+const attachLocks = new Map(); // tabId -> Promise (serialized attach attempts)
+
+export function ensureDebugger(tabId, domains = []) {
+  const lock = (attachLocks.get(tabId) || Promise.resolve())
+    .then(() => _ensureDebugger(tabId, domains));
+  attachLocks.set(tabId, lock.catch(() => {}));
+  return lock;
+}
+
+async function _ensureDebugger(tabId, domains) {
   let s = sessions.get(tabId);
   if (!s) {
     if (banned.has(tabId)) throw new Error('debugger was cancelled by the user on this tab — call attach explicitly or reload the tab');
@@ -100,7 +111,11 @@ export async function ensureDebugger(tabId, domains = []) {
 export function clearBanned(tabId) { banned.delete(tabId); }
 
 export async function detachDebugger(tabId) {
-  if (!sessions.has(tabId)) return false;
+  const s = sessions.get(tabId);
+  if (!s) return false;
+  // Reject pending work before deleting the session — otherwise an in-flight
+  // trace stop hangs until the 60s flush timeout.
+  if (s.tracing) { const t = s.tracing; s.tracing = null; t.reject(new Error('debugger detached')); }
   try { await chrome.debugger.detach({ tabId }); } catch {}
   sessions.delete(tabId);
   return true;
@@ -133,6 +148,18 @@ function routeEvent(tabId, s, method, p) {
       break;
 
     case 'Network.requestWillBeSent': {
+      // A redirect hop: the SAME requestId re-fires requestWillBeSent with the
+      // previous response in redirectResponse. Record the hop's status so the
+      // chain isn't lost and the old entry doesn't look eternally in-flight.
+      if (p.redirectResponse) {
+        const prev = s.netById.get(p.requestId);
+        if (prev) {
+          prev.status = p.redirectResponse.status;
+          prev.responseHeaders = p.redirectResponse.headers;
+          prev.mimeType = p.redirectResponse.mimeType;
+          prev.redirectTo = p.request.url;
+        }
+      }
       const e = {
         reqid: ++s.reqSeq, requestId: p.requestId, loaderId: p.loaderId,
         url: p.request.url, method: p.request.method, type: p.type || 'other',
@@ -141,6 +168,21 @@ function routeEvent(tabId, s, method, p) {
       };
       s.netById.set(p.requestId, e);
       pushCapped(s.net, e, MAX_NET);
+      break;
+    }
+    case 'Network.webSocketCreated': {
+      const e = {
+        reqid: ++s.reqSeq, requestId: p.requestId, loaderId: s.currentLoader,
+        url: p.url, method: 'WS', type: 'websocket',
+        timestamp: p.timestamp,
+      };
+      s.netById.set(p.requestId, e);
+      pushCapped(s.net, e, MAX_NET);
+      break;
+    }
+    case 'Network.webSocketClosed': {
+      const e = s.netById.get(p.requestId);
+      if (e) e.closed = true;
       break;
     }
     case 'Network.responseReceived': {
@@ -162,7 +204,16 @@ function routeEvent(tabId, s, method, p) {
     case 'Runtime.consoleAPICalled': {
       const e = {
         msgid: ++s.msgSeq, type: p.type,
-        text: p.args.map(a => a.value !== undefined ? String(a.value) : (a.description || a.type)).join(' '),
+        text: p.args.map(a => {
+          if (a.value !== undefined) return String(a.value);
+          // Plain objects carry their real shape in preview.properties —
+          // a.description is just "Object" and loses everything.
+          if (a.preview && a.preview.properties) {
+            const inner = a.preview.properties.map(pr => pr.name + ': ' + (pr.value !== undefined ? pr.value : (pr.valuePreview ? pr.valuePreview.description : pr.type))).join(', ');
+            return (a.description || 'Object') + ' {' + inner + (a.preview.overflow ? ', …' : '') + '}';
+          }
+          return a.description || a.type;
+        }).join(' '),
         timestamp: p.timestamp,
         url: p.stackTrace && p.stackTrace.callFrames[0] && p.stackTrace.callFrames[0].url,
       };
@@ -298,13 +349,16 @@ export const cdpTools = {
       applied.networkConditions = networkConditions;
     }
     if (cpuThrottlingRate !== undefined) {
-      await cdp(pageId, 'Emulation.setCPUThrottlingRate', { rate: cpuThrottlingRate });
-      applied.cpuThrottlingRate = cpuThrottlingRate;
+      const rate = Number(cpuThrottlingRate);
+      if (!Number.isFinite(rate) || rate < 1) throw new Error('cpuThrottlingRate must be a number >= 1');
+      await cdp(pageId, 'Emulation.setCPUThrottlingRate', { rate });
+      applied.cpuThrottlingRate = rate;
     }
     if (geolocation !== undefined) {
       if (!geolocation) await cdp(pageId, 'Emulation.clearGeolocationOverride');
       else {
-        const [lat, lon] = geolocation.split(',').map(Number);
+        const [lat, lon] = String(geolocation).split(',').map(Number);
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) throw new Error('geolocation must be "lat,lon" numbers');
         await cdp(pageId, 'Emulation.setGeolocationOverride', { latitude: lat, longitude: lon, accuracy: 100 });
       }
       applied.geolocation = geolocation || 'cleared';
@@ -329,8 +383,10 @@ export const cdpTools = {
       if (!m) throw new Error('bad viewport format: ' + viewport);
       const flags = m[4];
       const [, w, h, dpr] = m;
+      const dprN = +dpr;
+      if (dprN <= 0 || dprN > 10) throw new Error('viewport dpr out of range: ' + dpr);
       await cdp(pageId, 'Emulation.setDeviceMetricsOverride', {
-        width: +w, height: +h, deviceScaleFactor: +dpr,
+        width: Math.min(+w, 16384), height: Math.min(+h, 16384), deviceScaleFactor: dprN,
         mobile: flags.includes('mobile'),
         screenOrientation: flags.includes('landscape')
           ? { type: 'landscapePrimary', angle: 90 } : { type: 'portraitPrimary', angle: 0 },

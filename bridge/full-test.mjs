@@ -1,4 +1,4 @@
-// Full-surface test of Chrome MCP: exercises every tool against a live page.
+﻿// Full-surface test of Chrome MCP: exercises every tool against a live page.
 // Usage: node full-test.mjs   (requires bridge on :7890 + extension connected)
 const BASE = 'http://127.0.0.1:7890/mcp';
 const OUT = 'D:\\Tool\\chrome-mcp\\bridge\\test-out';
@@ -26,12 +26,12 @@ async function rpc(method, params) {
 let pass = 0, fail = 0, xfail = 0;
 const fails = [];
 function check(name, cond, detail = '') {
-  if (cond) { pass++; console.log(`  PASS  ${name}${detail ? '  — ' + detail : ''}`); }
-  else { fail++; fails.push(name); console.log(`  FAIL  ${name}${detail ? '  — ' + detail : ''}`); }
+  if (cond) { pass++; console.log(`  PASS  ${name}${detail ? '  鈥?' + detail : ''}`); }
+  else { fail++; fails.push(name); console.log(`  FAIL  ${name}${detail ? '  鈥?' + detail : ''}`); }
 }
 function expectLimited(name, r, detail = '') {
-  // Known platform limitation — counts separately, not as a failure.
-  xfail++; console.log(`  XLIM  ${name}${detail ? '  — ' + detail : ''}`);
+  // Known platform limitation 鈥?counts separately, not as a failure.
+  xfail++; console.log(`  XLIM  ${name}${detail ? '  鈥?' + detail : ''}`);
 }
 async function call(name, args = {}) {
   const r = await rpc('tools/call', { name, arguments: args });
@@ -44,7 +44,7 @@ const textOf = (r) => r?.result?.content?.find(c => c.type === 'text')?.text || 
 const jsonOf = (r) => { try { return JSON.parse(textOf(r)); } catch { return null; } };
 const uidOf = (snapshotResult, matchRe) => {
   const line = (jsonOf(snapshotResult)?.lines || []).find(l => matchRe.test(l));
-  const m = line && line.match(/\[(e\d+|f\d+e\d+)\]/);
+  const m = line && line.match(/\[((?:f\d+)?[a-z0-9]+e\d+)\]/);
   return m && m[1];
 };
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -89,7 +89,7 @@ r = await call('evaluate_script', {
       '<select id="sel"><option value="a">A</option><option value="b">B</option></select>' +
       '<button id="btn">PushMe</button>' +
       '<input id="fi" type="file"><div id="sp" style="height:3000px"></div>' +
-      '<div id="dropzone">DropZone</div><div id="dragme" draggable="true">DragMe</div>';
+      '<div id="dropzone" role="button">DropZone</div><div id="dragme" role="button" draggable="true">DragMe</div>';
     document.body.appendChild(d);
     document.getElementById('btn').onclick = () => {
       document.body.setAttribute('data-clicked', 'YES');
@@ -251,8 +251,7 @@ r = await call('list_downloads', { limit: 5 });
 check('list_downloads', /mcp-dl-test|filename|state/.test(textOf(r)), textOf(r).slice(0, 80));
 
 console.log('== navigation / resize / stale-uid ==');
-// tabs.update REPLACES history entries instead of pushing (Chrome semantics) —
-// build real history by clicking the "Learn more" link instead.
+// tabs.update REPLACES history entries instead of pushing (Chrome semantics) 鈥?// build real history by clicking the "Learn more" link instead.
 r = await call('navigate_page', { pageId, type: 'url', url: 'https://example.com/' });
 await sleep(1200);
 r = await call('take_snapshot', { pageId });
@@ -295,3 +294,7 @@ check('close_page', !r.error, r.error || '');
 
 console.log(`\n======== RESULT: ${pass} passed, ${fail} failed, ${xfail} known-limitation ========`);
 if (fails.length) console.log('failed:', fails.join(', '));
+
+
+
+

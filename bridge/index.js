@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { ListToolsRequestSchema, CallToolRequestSchema, isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
+import { ListToolsRequestSchema, CallToolRequestSchema, isInitializeRequest, McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 import { TOOLS } from './tools.js';
 
 const HOST = '127.0.0.1';
@@ -30,14 +30,19 @@ const LOCAL_RE = /^(?:https?:\/\/)?(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?$/
 const LOCAL_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]']);
 
 function localHostOnly(req) {
-  const host = (req.headers.host || '').split(':')[0];
+  const raw = req.headers.host || '';
+  // Bracketed IPv6 first: "[::1]:7890" -> "[::1]".
+  const host = raw.startsWith('[') ? raw.slice(0, raw.indexOf(']') + 1) : raw.split(':')[0];
   return LOCAL_HOSTS.has(host);
 }
 
 function httpAccessError(req) {
   if (!localHostOnly(req)) return 'forbidden host';
   const origin = req.headers.origin;
-  if (origin && !LOCAL_RE.test(origin) && !origin.startsWith('chrome-extension://')) {
+  if (origin && origin.startsWith('chrome-extension://')) {
+    // Other extensions may not drive the MCP endpoint either — same pin as /ws.
+    if (pinnedExtOrigin && origin !== pinnedExtOrigin) return 'forbidden extension origin';
+  } else if (origin && !LOCAL_RE.test(origin)) {
     return 'forbidden origin: ' + origin;
   }
   if (process.env.MCP_TOKEN) {
@@ -54,7 +59,8 @@ let pinnedExtOrigin = null;
 try { pinnedExtOrigin = fs.readFileSync(PIN_FILE, 'utf8').trim() || null; } catch {}
 
 function wsAllowed(req) {
-  const url = new URL(req.url, `http://${HOST}:${PORT}`);
+  let url;
+  try { url = new URL(req.url, `http://${HOST}:${PORT}`); } catch { return false; }
   if (url.pathname !== '/ws') return false;
   if (!localHostOnly(req)) return false;
   const origin = req.headers.origin;
@@ -96,6 +102,20 @@ function waitForSocket(ms) {
 }
 
 async function callExtension(tool, args) {
+  // upload_file hands raw paths to CDP DOM.setFileInputFiles, which happily
+  // reports success for missing files/dirs. Stat them first so callers get
+  // a real error instead of a phantom upload.
+  if (tool === 'upload_file' && args && Array.isArray(args.filePaths)) {
+    for (const p of args.filePaths) {
+      try {
+        const st = fs.statSync(String(p));
+        if (!st.isFile()) throw new Error('not a regular file: ' + p);
+      } catch (e) {
+        if (e && e.message && e.message.startsWith('not a regular file')) throw e;
+        throw new Error('file does not exist: ' + p);
+      }
+    }
+  }
   // SW restarts drop the socket briefly; wait for the reconnect (fast with
   // last-wins) before failing — only safe to retry here because nothing was sent.
   if (!extSocket || extSocket.readyState !== 1) await waitForSocket(2500);
@@ -115,7 +135,16 @@ async function callExtension(tool, args) {
 }
 
 const wss = new WebSocketServer({ noServer: true });
-wss.on('connection', (ws) => {
+wss.on('connection', (ws, req) => {
+  const origin = req.headers.origin || '';
+  // A client without a browser-enforced extension Origin is a local process.
+  // Headers are forgeable by local processes, so this is a loud log, not a
+  // security boundary — localhost processes are trusted (same model as a
+  // Docker socket or --remote-debugging-port). Set MCP_EXT_TOKEN to also
+  // gate them if the machine is multi-user/hostile.
+  if (!origin.startsWith('chrome-extension://')) {
+    console.log('[bridge] WARNING: non-extension client on /ws (origin=' + (origin || 'none') + ') — trusted-localhost model');
+  }
   // Single-slot, last-wins: a fresh connection replaces a stale one. This
   // heals reconnects where the old socket hasn't noticed the peer died yet.
   if (extSocket && extSocket !== ws) {
@@ -126,6 +155,7 @@ wss.on('connection', (ws) => {
   ws.on('message', (raw) => {
     let msg;
     try { msg = JSON.parse(raw.toString()); } catch { return; }
+    if (!msg || typeof msg !== 'object') return;
     if (msg.type === 'result') {
       const p = pending.get(msg.id);
       if (!p) return;
@@ -139,7 +169,10 @@ wss.on('connection', (ws) => {
     }
   });
   ws.on('close', () => {
-    if (extSocket === ws) extSocket = null;
+    // Only the live socket's death drops calls — a terminated stale socket
+    // must not flush pending calls that belong to its replacement.
+    if (extSocket !== ws) return;
+    extSocket = null;
     for (const [id, p] of pending) { clearTimeout(p.timer); p.reject(new Error('extension disconnected')); pending.delete(id); }
     console.log('[bridge] extension disconnected');
   });
@@ -148,10 +181,24 @@ wss.on('connection', (ws) => {
 
 // ---------- result formatting ----------
 
+// Writing INTO this repo is allowed for new files, but never overwrite
+// existing project files — a forged/buggy filePath must not be able to
+// rewrite bridge source, extension code, or configs (self-persistence).
+const PROJECT_ROOT = path.resolve(__dirname, '..');
+const WIN_RESERVED = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i;
+
 function writeOut(file, content) {
-  const dir = path.dirname(path.resolve(file.path));
+  const target = path.resolve(file.path);
+  const base = path.basename(target);
+  if (WIN_RESERVED.test(base) || base !== base.trim() || /[.:]$/.test(base) || base.includes(':')) {
+    throw new Error('unsafe filename: ' + base);
+  }
+  if (target.startsWith(PROJECT_ROOT + path.sep) && fs.existsSync(target)) {
+    throw new Error('refusing to overwrite project file: ' + target);
+  }
+  const dir = path.dirname(target);
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(file.path, file.base64 ? Buffer.from(content ?? '', 'base64') : (content ?? ''));
+  fs.writeFileSync(target, file.base64 ? Buffer.from(content ?? '', 'base64') : (content ?? ''));
 }
 
 function formatResult(data) {
@@ -217,6 +264,9 @@ function createMcpServer() {
   }));
   server.setRequestHandler(CallToolRequestSchema, async (req) => {
     const { name, arguments: args } = req.params;
+    if (!TOOLS.some(t => t.name === name)) {
+      throw new McpError(ErrorCode.InvalidParams, 'unknown tool: ' + name);
+    }
     try {
       const data = await callExtension(name, args || {});
       return formatResult(data);
@@ -250,12 +300,13 @@ setInterval(() => {
 function readBody(req) {
   return new Promise((resolve, reject) => {
     const len = Number(req.headers['content-length'] || 0);
-    if (len > MAX_BODY) { reject(new Error('payload too large')); req.destroy(); return; }
+    if (len > MAX_BODY) { reject(new Error('payload too large')); return; }
     let d = '';
     const timer = setTimeout(() => { reject(new Error('body read timeout')); req.destroy(); }, 10000);
     req.on('data', (c) => {
       d += c;
-      if (d.length > MAX_BODY) { clearTimeout(timer); reject(new Error('payload too large')); req.destroy(); }
+      // Stop reading but let the handler send a real 413 before teardown.
+      if (d.length > MAX_BODY) { clearTimeout(timer); reject(new Error('payload too large')); req.removeAllListeners('data'); req.pause(); }
     });
     req.on('end', () => { clearTimeout(timer); try { resolve(d ? JSON.parse(d) : undefined); } catch (e) { reject(e); } });
     req.on('error', (e) => { clearTimeout(timer); reject(e); });
@@ -267,7 +318,11 @@ const httpServer = http.createServer(async (req, res) => {
   const err = httpAccessError(req);
   if (err) { res.writeHead(403, { 'content-type': 'text/plain' }).end(err); return; }
 
-  const url = new URL(req.url, `http://${HOST}:${PORT}`);
+  // Malformed absolute-form targets (e.g. "GET http://:80/") throw here —
+  // catch it or the whole process dies on one packet.
+  let url;
+  try { url = new URL(req.url, `http://${HOST}:${PORT}`); }
+  catch { res.writeHead(400).end('bad request target'); return; }
 
   if (url.pathname === '/' && req.method === 'GET') {
     res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({
@@ -291,6 +346,9 @@ const httpServer = http.createServer(async (req, res) => {
     let transport = sessionId ? touchSession(sessionId) : undefined;
     if (!transport) {
       if (!sessionId && body && isInitializeRequest(body)) {
+        // Notification-style initialize (no id): the client would never learn
+        // the session id — the session leaks until TTL. Reject instead.
+        if (body.id === undefined || body.id === null) { res.writeHead(400).end('initialize requires an id'); return; }
         if (transports.size >= MAX_SESSIONS) { res.writeHead(503).end('too many sessions'); return; }
         const entry = { transport: null, lastSeen: Date.now() };
         const t = new StreamableHTTPServerTransport({

@@ -31,6 +31,7 @@ export const tabTools = {
   },
 
   async close_page({ pageId }) {
+    if (!Number.isInteger(pageId)) throw new Error('pageId must be an integer tab id');
     await chrome.tabs.remove(pageId);
     return { closed: pageId };
   },
@@ -46,7 +47,10 @@ export const tabTools = {
     await getTab(pageId);
     switch (type || 'url') {
       case 'url':
-        if (!url) throw new Error('url required');
+        if (!url || typeof url !== 'string') throw new Error('url required');
+        // Schemes that execute inline content or bypass the URL bar entirely —
+        // navigating to these would run script in the tab's context.
+        if (/^(?:javascript|vbscript|data):/i.test(url)) throw new Error('disallowed URL scheme: ' + url.slice(0, 20));
         await chrome.tabs.update(pageId, { url });
         break;
       case 'back':
@@ -112,9 +116,11 @@ export const tabTools = {
   },
 
   async wait_for({ pageId, text, textGone, time, timeout }) {
+    await getTab(pageId); // fail fast on closed/nonexistent tabs
     if (time) { await new Promise(r => setTimeout(r, Math.min(time, 60000))); }
     if (!text && !textGone) return { waited: time || 0 };
-    const deadline = Date.now() + (timeout || 15000);
+    const deadline = Date.now() + Math.min(Number(timeout) || 15000, 120000);
+    let lastErr = null, errStreak = 0;
     while (Date.now() < deadline) {
       try {
         const frames = await chrome.scripting.executeScript({
@@ -127,9 +133,15 @@ export const tabTools = {
           },
           args: [text || null, textGone || null],
         });
+        errStreak = 0;
         // Text in any frame counts (matches chrome-devtools-mcp page-wide semantics).
         if (frames.some(r => r && r.result)) return { pageId, found: true };
-      } catch {}
+      } catch (e) {
+        // Injection keeps failing (dead tab, chrome:// page) → don't burn the
+        // whole timeout on an impossible wait.
+        lastErr = e;
+        if (++errStreak >= 3) throw new Error('cannot poll page: ' + (e && e.message || e));
+      }
       await new Promise(r => setTimeout(r, 500));
     }
     throw new Error('timeout waiting: ' + JSON.stringify({ text, textGone }));

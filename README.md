@@ -67,22 +67,28 @@ start-bridge.bat        :: 或 bridge\ 下 npm start
 ## iframe 支持
 
 `ensureLib` 用 `allFrames: true` 注入所有 frame（含跨域）。`take_snapshot` 遍历 frame 树，
-iframe 内元素 uid 形如 `f3e1`（`f<frameId>` 前缀），交互工具自动路由到对应 frame。
+iframe 内元素 uid 形如 `f3xxxxe1`（`f<frameId>` 前缀 + 每文档随机 nonce），交互工具自动路由到对应 frame。
 
 ## 安全
 
 - bridge 只绑 `127.0.0.1`；HTTP 校验 Host/Origin（防 DNS rebinding——恶意网页无法 POST 到 /mcp）
 - WS 只接受 `chrome-extension://` 来源，且**首个连接的扩展 ID 会被 pin 到 `bridge/.extension-id`**，之后其它扩展一律拒绝；非浏览器来源可用 `MCP_EXT_TOKEN` 控制
+- `http_request`/`download_file` 只允许 `http(s)`（`download_file` 另允许 `data:`）——阻止 `file://` 读本地文件
+- `navigate_page` 拒绝 `javascript:`/`vbscript:`/`data:` 这类可执行内联内容的 scheme
+- `filePath` 输出有防护：Windows 保留名/ADS 拒绝写入；**仓库内已存在文件拒绝覆盖**（防止覆写 bridge/扩展源码）
 - 拿到这个端点等于拿到浏览器控制权——**不要**把端口暴露到局域网
+- **信任边界说明**：`/ws` 的扩展身份校验能挡住网页和其它扩展（Origin 由浏览器强制），但**无法区分本机进程**——任何能连 127.0.0.1:7890 的本地进程理论上都能冒充扩展（与 Docker socket、`--remote-debugging-port` 同一信任模型）。多用户/不可信本机环境请设置 `MCP_EXT_TOKEN`（非浏览器来源强制 `?token=`）并保持 Chrome 锁定。
 
 ## 注意 / 已知边界
 
 - 走 `chrome.debugger` 的工具会让 Chrome 顶部显示「正在调试此浏览器」横幅。**闲置 5 分钟自动 detach**；`detach_debugger` 可手动移除；用户在横幅上点「取消」后该 tab 不再自动重连（导航后解除）。同一 tab 同一时刻只能有一个 debugger（与 DevTools 面板或其它调试扩展互斥），扩展重启留下的僵尸 attach 会自动清扫恢复。
-- 调试类收集器与 uid→frame 路由表在页面导航后自动清空；拿旧 uid 调用会报 `stale uid` 提示重新 snapshot（页面内 DOM 变化后同样建议重拍）。
+- 调试类收集器与 uid→frame 路由表在页面导航后自动清空；uid 内含每文档随机 nonce，导航后旧 uid 必然报 `stale uid`/`element not found`（不会误点新页面上同位置元素）。页面内 DOM 变化后同样建议重拍。
 - 合成事件 `isTrusted=false`；click/press_key 在调试器附着且 tab 前台时自动升级为 CDP `Input.*` 可信输入（Chrome 不向后台 tab 投递 Input 事件）。
 - OOPIF（跨进程跨域 iframe）内的 file 上传和 CDP 网络采集不可达（chrome.debugger 只够到主 target；快照/交互不受此限）。
 - `evaluate_script` 的 `args` 传元素 uid；多 frame 时用 `frameId` 或首参数 uid 自动定位 frame。
 - 隐身窗口需在 `chrome://extensions` 手动开「在隐身模式下启用」，`new_page isolatedContext` 才可用。
+- `new_page` 默认 `about:blank` 是无 origin 页面，scripting 不可达——先 `navigate_page` 到真实 URL 再操作。
+- `evaluate_script` 返回值经 JSON 序列化：BigInt→`"10n"`、循环引用→`"[Circular]"`、DOM 元素→`"<tag>"`、函数→`"[Function name]"`；async 函数会等待 Promise 结果。
 - 未实现：Lighthouse 审计、语义搜索（mcp-chrome 的向量检索）、录制回放、OOPIF flat-session CDP——按需再加。
 
 ## 测试
@@ -92,5 +98,7 @@ cd bridge
 node smoke-test.mjs    :: 协议冒烟：initialize / tools/list / 未接扩展时的报错
 node full-test.mjs     :: 端到端 60 项检查（需 Chrome 已加载扩展），覆盖全部 37 个工具
 ```
+
+`bridge/adv-tests/` 里是 15 组对抗性测试脚本（协议 fuzz、路径穿越、WS 冒充、竞态、压力等），改安全相关代码后可重跑对应脚本。
 
 CI 在每次 push/PR 自动跑语法检查 + 冒烟测试（`.github/workflows/test.yml`）。

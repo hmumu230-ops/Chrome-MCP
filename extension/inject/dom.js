@@ -5,20 +5,27 @@
 (function () {
   const UID_ATTR = 'data-mcp-uid';
   window.__mcpUid = window.__mcpUid || 0;
-  // uid prefix set by snapshot() so iframe elements get distinct uids (e.g. "f3e1").
+  // Per-document random nonce baked into uids: a fresh document after
+  // navigation mints uids that can never collide with the previous page's,
+  // so a stale uid errors instead of hitting an unrelated look-alike element.
+  if (!window.__mcpDoc) window.__mcpDoc = Math.random().toString(36).slice(2, 6);
+  // uid prefix set by snapshot() so iframe elements get distinct uids (e.g. "f3d7ke1").
   window.__mcpPrefix = window.__mcpPrefix || '';
 
   function uid(el) {
     let v = el.getAttribute(UID_ATTR);
     if (!v) {
-      v = window.__mcpPrefix + 'e' + (++window.__mcpUid);
+      v = window.__mcpPrefix + window.__mcpDoc + 'e' + (++window.__mcpUid);
       el.setAttribute(UID_ATTR, v);
     }
     return v;
   }
 
   function find(u) {
-    const el = document.querySelector('[' + UID_ATTR + '="' + u + '"]');
+    // Escape for CSS attribute-selector string context — raw interpolation let
+    // crafted uids (e.g. `"],input,[x="`) break out and match other elements.
+    const safe = String(u).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    const el = document.querySelector('[' + UID_ATTR + '="' + safe + '"]');
     if (el && !el.isConnected) throw new Error('element detached (stale uid ' + u + ') — call take_snapshot');
     return el;
   }
@@ -90,7 +97,8 @@
         if (el.matches(INTERACTIVE) || el.matches(HEADINGS)) {
           if (visible(el)) {
             const u = uid(el);
-            line = '[' + u + '] ' + roleLine(el); count++;
+            const rl = roleLine(el) || 'element';
+            line = '[' + u + '] ' + rl; count++;
             uids.push(u);
           }
         } else {
@@ -141,7 +149,16 @@
       if (!el) throw new Error('element not found: ' + u);
       el.scrollIntoView({ block: 'center', inline: 'center' });
       const r = el.getBoundingClientRect();
-      return { x: r.x, y: r.y, width: r.width, height: r.height, cx: r.x + r.width / 2, cy: r.y + r.height / 2 };
+      // Zero-size = hidden/collapsed: the caller must NOT translate this into
+      // CDP coordinates — that would trusted-click the viewport corner (0,0).
+      if (!(r.width > 0 && r.height > 0)) throw new Error('element has zero size (hidden?): ' + u);
+      // x/y/cx/cy are viewport coords (Input.dispatch*). docX/docY are document
+      // coords — what Page.captureScreenshot's clip expects.
+      return {
+        x: r.x, y: r.y, width: r.width, height: r.height,
+        cx: r.x + r.width / 2, cy: r.y + r.height / 2,
+        docX: r.x + scrollX, docY: r.y + scrollY,
+      };
     },
 
     click(u, dbl) {
@@ -184,6 +201,10 @@
     },
 
     fill(u, value) {
+      if (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'boolean') {
+        throw new Error('fill value must be a string/number/boolean, got: ' + Object.prototype.toString.call(value));
+      }
+      value = String(value);
       const el = find(u);
       if (!el) throw new Error('element not found: ' + u);
       el.scrollIntoView({ block: 'center' });
@@ -263,19 +284,26 @@
 
     scroll(opts) {
       // {uid} scrolls element into view; {to:'top'|'bottom'}; {dx,dy} relative.
-      if (opts.uid) {
+      opts = opts || {};
+      if ('uid' in opts) {
+        if (!opts.uid) throw new Error('scroll uid must be a non-empty string');
         const el = find(opts.uid);
         if (!el) throw new Error('element not found: ' + opts.uid);
         el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
         return { scrolledTo: opts.uid };
       }
+      if ('to' in opts && opts.to !== 'top' && opts.to !== 'bottom') throw new Error('scroll "to" must be top|bottom, got: ' + opts.to);
+      const dx = opts.dx === undefined ? 0 : Number(opts.dx);
+      const dy = opts.dy === undefined ? 0 : Number(opts.dy);
+      if (!Number.isFinite(dx) || !Number.isFinite(dy)) throw new Error('scroll dx/dy must be finite numbers');
       if (opts.to === 'top') window.scrollTo(0, 0);
       else if (opts.to === 'bottom') window.scrollTo(0, document.documentElement.scrollHeight);
-      else window.scrollBy(opts.dx || 0, opts.dy || 0);
+      else window.scrollBy(dx, dy);
       return { x: scrollX, y: scrollY };
     },
 
     clickAt(x, y, dbl) {
+      if (!Number.isFinite(x) || !Number.isFinite(y)) throw new Error('click_xy requires finite x,y');
       const el = document.elementFromPoint(x, y);
       if (!el) throw new Error('nothing at ' + x + ',' + y);
       const opts = { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y, button: 0 };

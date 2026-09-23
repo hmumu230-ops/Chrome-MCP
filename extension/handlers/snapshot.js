@@ -49,28 +49,42 @@ export const snapshotTools = {
       let clip;
       if (uid) {
         const { data: box } = await runInPage(pageId, (u) => window.__mcp.tryCall('box', u), [uid], checkUid(pageId, uid)).catch(() => ({ data: null }));
-        if (!box) throw new Error('element not found: ' + uid);
-        clip = { x: box.x, y: box.y, width: box.width, height: box.height, scale: 1 };
+        if (!box) throw new Error('element not found or not visible: ' + uid);
+        // clip is interpreted in DOCUMENT coords — box.x/y are viewport coords.
+        clip = { x: box.docX ?? box.x, y: box.docY ?? box.y, width: box.width, height: box.height, scale: 1 };
       } else {
         const { cssContentSize } = await cdp(pageId, 'Page.getLayoutMetrics', {});
         clip = { x: 0, y: 0, scale: 1, width: cssContentSize.width, height: Math.min(cssContentSize.height, 16384) };
+        // Chrome caps captures at 16384px — tell the caller content was cut.
+        if (cssContentSize.height > 16384) {
+          var truncated = true;
+        }
       }
       const cap = (extra, timeoutMs) => cdp(pageId, 'Page.captureScreenshot', {
         format: fmt, quality: fmt === 'png' ? undefined : quality, clip,
         captureBeyondViewport: !!fullPage, ...extra,
       }, timeoutMs);
+      const fin = (data) => ({ ...shot(data, 'image/' + fmt), ...(truncated ? { truncated: true, note: 'page exceeds 16384px capture limit — bottom cut off' } : {}) });
       try {
-        const { data } = await cap({}, fullPage ? 20000 : 25000);
-        return shot(data, 'image/' + fmt);
+        const { data } = await cap({}, 12000);
+        return fin(data);
       } catch (e) {
         if (!/CDP timeout/.test(String(e && e.message || e))) throw e;
-        // Occluded/minimized windows stall the compositor — capture without
-        // the surface (browser-side path) instead of hanging forever.
+        // First capture on a background/occluded tab stalls while Chrome warms
+        // the compositor — the identical retry usually succeeds fast.
         try {
-          const { data } = await cap({ fromSurface: false }, 20000);
-          return shot(data, 'image/' + fmt);
-        } catch (e2) {
-          if (!fullPage || !/CDP timeout/.test(String(e2 && e2.message || e2))) throw e2;
+          const { data } = await cap({}, 12000);
+          return fin(data);
+        } catch (e1) {
+          try {
+            const { data } = await cap({ fromSurface: false }, 12000);
+            return fin(data);
+          } catch (e2) {
+            if (!fullPage || !/CDP timeout/.test(String(e2 && e2.message || e2))) {
+              // Don't mask the primary failure behind the fallback's error.
+              throw new Error('screenshot failed: ' + (e && e.message || e) + '; retries: ' + (e2 && e2.message || e2));
+            }
+          }
         }
         // Last resort for fullPage: grow viewport to content height, shoot, restore.
         await cdp(pageId, 'Emulation.setDeviceMetricsOverride', {
@@ -91,12 +105,24 @@ export const snapshotTools = {
     if (!tab.active || fmt === 'webp') {
       await ensureDebugger(pageId, ['Page']);
       try {
-        const { data } = await cdp(pageId, 'Page.captureScreenshot', { format: fmt, quality: fmt === 'png' ? undefined : quality }, 25000);
+        const { data } = await cdp(pageId, 'Page.captureScreenshot', { format: fmt, quality: fmt === 'png' ? undefined : quality }, 12000);
         return shot(data, 'image/' + fmt);
       } catch (e) {
         if (!/CDP timeout/.test(String(e && e.message || e))) throw e;
-        const { data } = await cdp(pageId, 'Page.captureScreenshot', { format: fmt, quality: fmt === 'png' ? undefined : quality, fromSurface: false });
-        return shot(data, 'image/' + fmt);
+        // First capture warms the occluded compositor — same-params retry
+        // usually succeeds; fromSurface:false is the last resort (unsupported
+        // on some headed builds, kept for platforms where it works).
+        try {
+          const { data } = await cdp(pageId, 'Page.captureScreenshot', { format: fmt, quality: fmt === 'png' ? undefined : quality }, 12000);
+          return shot(data, 'image/' + fmt);
+        } catch (e1) {
+          try {
+            const { data } = await cdp(pageId, 'Page.captureScreenshot', { format: fmt, quality: fmt === 'png' ? undefined : quality, fromSurface: false }, 12000);
+            return shot(data, 'image/' + fmt);
+          } catch (e2) {
+            throw new Error('screenshot failed: ' + (e && e.message || e) + '; retries: ' + (e2 && e2.message || e2));
+          }
+        }
       }
     }
     try {
@@ -106,11 +132,16 @@ export const snapshotTools = {
       ]);
       return shot(dataUrl.split(',')[1], fmt === 'jpeg' ? 'image/jpeg' : 'image/png');
     } catch (e) {
-      // captureVisibleTab can hang on occluded/minimized windows — go through
-      // the debugger with the surface-less path instead.
+      // captureVisibleTab can hang on occluded/minimized windows — retry via
+      // the debugger (compositor warmup), then the surface-less path.
       await ensureDebugger(pageId, ['Page']);
-      const { data } = await cdp(pageId, 'Page.captureScreenshot', { format: fmt, quality: fmt === 'png' ? undefined : quality, fromSurface: false });
-      return shot(data, 'image/' + fmt);
+      try {
+        const { data } = await cdp(pageId, 'Page.captureScreenshot', { format: fmt, quality: fmt === 'png' ? undefined : quality }, 12000);
+        return shot(data, 'image/' + fmt);
+      } catch {
+        const { data } = await cdp(pageId, 'Page.captureScreenshot', { format: fmt, quality: fmt === 'png' ? undefined : quality, fromSurface: false }, 12000);
+        return shot(data, 'image/' + fmt);
+      }
     }
   },
 
@@ -130,10 +161,37 @@ export const snapshotTools = {
       const [r] = await chrome.scripting.executeScript({
         target, world: 'MAIN',
         func: (src, uids) => {
+          // Lossy-but-honest serializer: BigInt/function/symbol/circular/DOM
+          // values all get string-ish forms instead of silently becoming {}.
+          const norm = (v) => {
+            if (v === undefined) return null;
+            const seen = new WeakSet();
+            try {
+              return JSON.parse(JSON.stringify(v, (k, x) => {
+                if (typeof x === 'bigint') return x.toString() + 'n';
+                if (typeof x === 'function') return '[Function ' + (x.name || 'anonymous') + ']';
+                if (typeof x === 'symbol') return String(x);
+                if (x && typeof x === 'object') {
+                  if (seen.has(x)) return '[Circular]';
+                  seen.add(x);
+                  if (x instanceof Element) return '<' + x.tagName.toLowerCase() + (x.id ? '#' + x.id : '') + '>';
+                }
+                return x;
+              }));
+            } catch { try { return String(v); } catch { return null; } }
+          };
           try {
             const fn = (0, eval)('(' + src + ')');
-            const els = (uids || []).map(u => document.querySelector('[data-mcp-uid="' + u + '"]'));
-            return { __ok: true, v: fn(...els) };
+            const els = (uids || []).map(u => {
+              const safe = String(u).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+              return document.querySelector('[data-mcp-uid="' + safe + '"]');
+            });
+            // executeScript awaits a top-level promise → async functions get
+            // real results (previously a pending Promise serialized to {}).
+            return Promise.resolve()
+              .then(() => fn(...els))
+              .then(v => ({ __ok: true, v: norm(v) }),
+                    e => ({ __ok: false, err: String(e && e.message || e) }));
           } catch (e) { return { __ok: false, err: String(e && e.message || e) }; }
         },
         args: [fnSrc, (args && args.length ? args : null)],
@@ -149,8 +207,11 @@ export const snapshotTools = {
       // bypasses page CSP entirely, at the cost of attaching the debugger.
       if (!/unsafe-eval|Content Security Policy|EvalError/i.test(String(e && e.message || e))) throw e;
       await ensureDebugger(pageId, ['Runtime']);
-      const elsExpr = (args || []).map(u => 'document.querySelector(\'[data-mcp-uid="' + u + '"]\')').join(',');
-      const expr = '(() => { const els = [' + elsExpr + ']; return (' + fnSrc + ').apply(null, els); })()';
+      // uids go in as a JSON data literal — raw interpolation let crafted uids
+      // break out of the selector string and inject code into the expression.
+      const uidsJson = JSON.stringify(args || []);
+      const expr = '(() => { const all=[...document.querySelectorAll("[data-mcp-uid]")]; const els=' + uidsJson +
+        '.map(u=>all.find(e=>e.getAttribute("data-mcp-uid")===String(u))||null); return (' + fnSrc + ').apply(null, els); })()';
       const res = await cdp(pageId, 'Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise: true });
       if (res.exceptionDetails) {
         const ex = res.exceptionDetails;

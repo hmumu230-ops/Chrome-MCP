@@ -2,11 +2,12 @@
 // Element uids may live in iframes; frameFor() routes calls to the right frame.
 import { ensureLib, runInPage, runInAllFrames, frameFor, checkUid } from './util.js';
 import { cdp, ensureDebugger, getSession } from './cdp.js';
+// Static import: dynamic import() is disallowed in MV3 service workers.
+import { snapshotTools } from './snapshot.js';
 
 async function snapshotMaybe(pageId, include) {
   if (!include) return undefined;
-  const { take_snapshot } = await import('./snapshot.js').then(m => m.snapshotTools);
-  return take_snapshot({ pageId });
+  return snapshotTools.take_snapshot({ pageId });
 }
 
 // Run fn(u, ...extra) in the frame that owns uid. If the mapped frame no
@@ -33,14 +34,18 @@ export const interactTools = {
     // isTrusted checks. Falls back to synthetic events silently.
     const tab = await chrome.tabs.get(pageId).catch(() => null);
     if (getSession(pageId) && tab && tab.active) {
+      let viaCdp = false;
       try {
         const { data: pt } = await inFrameOf(pageId, uid, (u) => window.__mcp.tryCall('box', u));
         for (let i = 0; i < (dblClick ? 2 : 1); i++) {
           await cdp(pageId, 'Input.dispatchMouseEvent', { type: 'mousePressed', x: pt.cx, y: pt.cy, button: 'left', clickCount: i + 1 });
           await cdp(pageId, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x: pt.cx, y: pt.cy, button: 'left', clickCount: i + 1 });
         }
-        return { clicked: uid, via: 'cdp', snapshot: await snapshotMaybe(pageId, includeSnapshot) };
+        viaCdp = true;
       } catch {}
+      // snapshotMaybe AFTER the try: a snapshot failure must not drop into
+      // the synthetic path and double-click the element.
+      if (viaCdp) return { clicked: uid, via: 'cdp', snapshot: await snapshotMaybe(pageId, includeSnapshot) };
     }
     await inFrameOf(pageId, uid, (u, d) => window.__mcp.tryCall('click', u, d), [!!dblClick]);
     return { clicked: uid, via: 'synthetic', snapshot: await snapshotMaybe(pageId, includeSnapshot) };
@@ -54,12 +59,16 @@ export const interactTools = {
 
   async drag({ pageId, from_uid, to_uid, includeSnapshot }) {
     await ensureLib(pageId);
+    checkUid(pageId, to_uid); // to_uid is used raw — validate staleness like from_uid
     // Cross-frame drag is not supported; both uids must be in one frame.
     await inFrameOf(pageId, from_uid, (a, b) => window.__mcp.tryCall('dragTo', a, b), [to_uid]);
     return { dragged: from_uid, onto: to_uid, snapshot: await snapshotMaybe(pageId, includeSnapshot) };
   },
 
   async fill({ pageId, uid, value, includeSnapshot }) {
+    if (value === undefined || value === null || typeof value === 'object') {
+      throw new Error('fill value must be a string/number/boolean (got ' + (value === null ? 'null' : typeof value) + ')');
+    }
     await ensureLib(pageId);
     await inFrameOf(pageId, uid, (u, v) => window.__mcp.tryCall('fill', u, v), [String(value)]);
     return { filled: uid, snapshot: await snapshotMaybe(pageId, includeSnapshot) };
@@ -142,12 +151,14 @@ export const interactTools = {
       } catch {}
     }
     await ensureLib(pageId);
-    await runInAllFrames(pageId, (k) => {
+    const frames = await runInAllFrames(pageId, (k) => {
       try {
-        if (document.hasFocus()) window.__mcp.pressKey(k);
-        return { __ok: true, v: true };
+        const focused = document.hasFocus() || !!(document.activeElement && document.activeElement !== document.body && document.activeElement !== document.documentElement);
+        if (focused) window.__mcp.pressKey(k);
+        return { __ok: true, v: focused };
       } catch (e) { return { __ok: false, err: String(e && e.message || e) }; }
     }, [key]);
+    if (!frames.some(f => f.result === true)) throw new Error('no focused frame — nothing dispatched press_key');
     return { pressed: key, via: 'synthetic' };
   },
 
@@ -169,10 +180,16 @@ export const interactTools = {
   async upload_file({ pageId, uid, filePaths }) {
     // DOM.setFileInputFiles requires CDP. Same-process iframes are included in
     // DOM.getDocument; OOPIF (cross-origin process) file inputs are not reachable.
+    if (!Array.isArray(filePaths) || !filePaths.length || filePaths.some(f => typeof f !== 'string' || !f)) {
+      throw new Error('filePaths must be a non-empty array of path strings');
+    }
     await ensureLib(pageId);
+    checkUid(pageId, uid);
     await ensureDebugger(pageId, ['DOM', 'Page']);
     const doc = await cdp(pageId, 'DOM.getDocument', { depth: -1 });
-    const { nodeId } = await cdp(pageId, 'DOM.querySelector', { nodeId: doc.root.nodeId, selector: '[data-mcp-uid="' + uid + '"]' });
+    // Escape the uid for selector context — raw interpolation allowed selector injection.
+    const sel = '[data-mcp-uid="' + String(uid).replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"]';
+    const { nodeId } = await cdp(pageId, 'DOM.querySelector', { nodeId: doc.root.nodeId, selector: sel });
     if (!nodeId) throw new Error('file input not found: ' + uid);
     await cdp(pageId, 'DOM.setFileInputFiles', { files: filePaths, nodeId });
     return { uploaded: filePaths, uid };
