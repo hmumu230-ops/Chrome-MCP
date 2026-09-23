@@ -1,0 +1,15 @@
+[
+  {"label": "http tab set normal", "tool": "set_cookie", "args": {"pageId": 301371023, "name": "adv12probe", "value": "probe123"}},
+  {"label": "http tab secure:true", "tool": "set_cookie", "args": {"pageId": 301371023, "name": "adv12sec_http", "value": "v", "secure": true}},
+  {"label": "http tab sameSite=none no secure", "tool": "set_cookie", "args": {"pageId": 301371023, "name": "adv12ssn", "value": "v", "sameSite": "no_restriction"}},
+  {"label": "http tab httpOnly", "tool": "set_cookie", "args": {"pageId": 301371023, "name": "adv12ho", "value": "hov", "httpOnly": true}},
+  {"label": "http tab get_cookies", "tool": "get_cookies", "args": {"pageId": 301371023}},
+  {"label": "http tab document.cookie", "tool": "evaluate_script", "args": {"pageId": 301371023, "function": "() => document.cookie"}},
+  {"label": "GH fixation: set junk cookie on github", "tool": "set_cookie", "args": {"pageId": 301370170, "name": "adv12fix", "value": "FIXED_BY_MCP"}},
+  {"label": "GH confirm planted", "tool": "get_cookies", "args": {"pageId": 301370170, "name": "adv12fix"}},
+  {"label": "GH cleanup", "tool": "remove_cookie", "args": {"pageId": 301370170, "name": "adv12fix"}},
+  {"label": "GH verify gone", "tool": "get_cookies", "args": {"pageId": 301370170, "name": "adv12fix"}},
+  {"label": "http tab cleanup probe", "tool": "remove_cookie", "args": {"pageId": 301371023, "name": "adv12sec_http"}},
+  {"label": "http tab cleanup ho", "tool": "remove_cookie", "args": {"pageId": 301371023, "name": "adv12ho"}},
+  {"label": "http tab cleanup ssn", "tool": "remove_cookie", "args": {"pageId": 301371023, "name": "adv12ssn"}}
+]

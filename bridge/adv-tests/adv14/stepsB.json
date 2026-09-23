@@ -1,0 +1,30 @@
+[
+ {"name":"B1-mkpage-bg","tool":"new_page","args":{"url":"http://127.0.0.1:8128/","background":true},"timeoutMs":20000,"retry":180000,"store":{"PB":"pageId"}},
+ {"name":"B1-attachdbg","tool":"list_console_messages","args":{"pageId":"$PB"},"timeoutMs":20000},
+ {"name":"B1-eval-alert-bgtab","tool":"evaluate_script","args":{"pageId":"$PB","function":"() => { alert('BGTAB-ALERT'); return 'ret-bgtab'; }"},"timeoutMs":60000,"await_":false},
+ {"sleep":3000},
+ {"name":"B1-handle","tool":"handle_dialog","args":{"pageId":"$PB","action":"accept"},"timeoutMs":15000},
+ {"collect":true,"collectMs":30000},
+ {"name":"B1-close","tool":"close_page","args":{"pageId":"$PB"},"timeoutMs":15000},
+
+ {"name":"B2-mkpage","tool":"new_page","args":{"url":"http://127.0.0.1:8128/"},"timeoutMs":20000,"store":{"PA":"pageId"}},
+ {"name":"B2-eval-alert","tool":"evaluate_script","args":{"pageId":"$PA","function":"() => { alert('FOCUS-LOSS'); return 'ret-focusloss'; }"},"timeoutMs":60000,"await_":false},
+ {"sleep":2000},
+ {"name":"B2-otherpage","tool":"new_page","args":{"url":"about:blank"},"timeoutMs":15000,"store":{"PO":"pageId"}},
+ {"collect":true,"collectMs":30000},
+ {"name":"B2-handle","tool":"handle_dialog","args":{"pageId":"$PA","action":"accept"},"timeoutMs":15000},
+ {"name":"B2-close-other","tool":"close_page","args":{"pageId":"$PO"},"timeoutMs":15000},
+
+ {"name":"B3-eval-alert","tool":"evaluate_script","args":{"pageId":"$PA","function":"() => { alert('STALE-SRC'); return 'ret-stale'; }"},"timeoutMs":60000,"await_":false},
+ {"sleep":2000},
+ {"name":"B3-navigate","tool":"navigate_page","args":{"pageId":"$PA","type":"url","url":"http://127.0.0.1:8128/"},"timeoutMs":20000},
+ {"collect":true,"collectMs":30000},
+ {"name":"B3-eval-alert2","tool":"evaluate_script","args":{"pageId":"$PA","function":"() => { alert('SECOND-DLG'); return 'ret-second'; }"},"timeoutMs":60000,"await_":false},
+ {"sleep":2000},
+ {"name":"B3-handle-pop1","tool":"handle_dialog","args":{"pageId":"$PA","action":"accept"},"timeoutMs":15000},
+ {"sleep":1000},
+ {"name":"B3-handle-pop2","tool":"handle_dialog","args":{"pageId":"$PA","action":"accept"},"timeoutMs":15000},
+ {"collect":true,"collectMs":30000},
+ {"name":"B3-snap","tool":"take_snapshot","args":{"pageId":"$PA"},"timeoutMs":15000},
+ {"name":"B3-close","tool":"close_page","args":{"pageId":"$PA"},"timeoutMs":15000}
+]

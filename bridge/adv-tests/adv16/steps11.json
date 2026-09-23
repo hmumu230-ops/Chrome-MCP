@@ -1,0 +1,5 @@
+[
+  { "name": "xframe loaded?", "tool": "evaluate_script", "args": { "pageId": 301371097, "function": "() => { const f=document.getElementById('xf'); return {src:f.src, h:f.offsetHeight, w:f.offsetWidth}; }" } },
+  { "name": "xframe log via eval attempt", "tool": "evaluate_script", "args": { "pageId": 301371097, "function": "() => { const f=document.getElementById('xf'); try { return String(f.contentWindow && f.contentWindow.location.href); } catch(e){ return 'BLOCKED:'+e.name; } }" } },
+  { "name": "xiframe console recheck", "tool": "list_console_messages", "args": { "pageId": 301371097 } }
+]

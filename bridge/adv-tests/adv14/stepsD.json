@@ -1,0 +1,29 @@
+[
+ {"name":"D1-mkpage","tool":"new_page","args":{"url":"http://127.0.0.1:8128/"},"timeoutMs":20000,"retry":180000,"store":{"PID":"pageId"}},
+ {"name":"D1-attachdbg","tool":"list_console_messages","args":{"pageId":"$PID"},"timeoutMs":20000},
+ {"name":"D1-snap","tool":"take_snapshot","args":{"pageId":"$PID"},"timeoutMs":20000},
+ {"name":"D1-getuid-neutral","tool":"evaluate_script","args":{"pageId":"$PID","function":"() => document.getElementById('btn-disarm').getAttribute('data-mcp-uid')"},"timeoutMs":15000,"store":{"BTNN":"result"}},
+ {"name":"D1-click-neutral","tool":"click","args":{"pageId":"$PID","uid":"$BTNN"},"timeoutMs":20000},
+ {"name":"D1-arm","tool":"evaluate_script","args":{"pageId":"$PID","function":"() => { window.onbeforeunload = (e) => { e.preventDefault(); e.returnValue='dirty'; return 'dirty'; }; return 'armed-activated'; }"},"timeoutMs":15000},
+ {"name":"D1-closepage-dirty","tool":"close_page","args":{"pageId":"$PID"},"timeoutMs":15000},
+ {"name":"D1-listpages-after-close","tool":"list_pages","args":{},"timeoutMs":15000},
+ {"name":"D1-handle-beforeunload","tool":"handle_dialog","args":{"pageId":"$PID","action":"accept"},"timeoutMs":20000},
+ {"sleep":2000},
+ {"name":"D1-listpages-final","tool":"list_pages","args":{},"timeoutMs":15000},
+
+ {"name":"D2-mkpage","tool":"new_page","args":{"url":"http://127.0.0.1:8128/"},"timeoutMs":20000,"store":{"PID":"pageId"}},
+ {"name":"D2-attachdbg","tool":"list_console_messages","args":{"pageId":"$PID"},"timeoutMs":20000},
+ {"name":"D2-snap","tool":"take_snapshot","args":{"pageId":"$PID"},"timeoutMs":20000},
+ {"name":"D2-getuid-popup","tool":"evaluate_script","args":{"pageId":"$PID","function":"() => document.getElementById('btn-popup').getAttribute('data-mcp-uid')"},"timeoutMs":15000,"store":{"BTNP":"result"}},
+ {"name":"D2-click-popup","tool":"click","args":{"pageId":"$PID","uid":"$BTNP"},"timeoutMs":20000},
+ {"sleep":2500},
+ {"name":"D2-listpages-popup","tool":"list_pages","args":{},"timeoutMs":15000},
+
+ {"name":"D3-arm","tool":"evaluate_script","args":{"pageId":"$PID","function":"() => { window.onbeforeunload = (e) => { e.preventDefault(); e.returnValue='dirty'; return 'dirty'; }; return 'armed-activated'; }"},"timeoutMs":15000},
+ {"name":"D3-navigate-dirty","tool":"navigate_page","args":{"pageId":"$PID","type":"url","url":"http://127.0.0.1:8128/popup.html"},"timeoutMs":15000},
+ {"name":"D3-listpages","tool":"list_pages","args":{},"timeoutMs":15000},
+ {"name":"D3-handle-beforeunload-dismiss","tool":"handle_dialog","args":{"pageId":"$PID","action":"dismiss"},"timeoutMs":20000},
+ {"name":"D3-eval-where","tool":"evaluate_script","args":{"pageId":"$PID","function":"() => location.pathname"},"timeoutMs":15000},
+ {"name":"D3-disarm","tool":"evaluate_script","args":{"pageId":"$PID","function":"() => { window.onbeforeunload = null; return 'disarmed'; }"},"timeoutMs":15000},
+ {"name":"D3-close","tool":"close_page","args":{"pageId":"$PID"},"timeoutMs":15000}
+]

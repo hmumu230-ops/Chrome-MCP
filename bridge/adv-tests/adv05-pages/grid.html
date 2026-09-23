@@ -1,0 +1,48 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>adv05-grid</title>
+<style>
+  body{margin:0;font-family:monospace}
+  .g button{width:38px;height:26px;font-size:9px;padding:0;margin:0}
+  #log{position:fixed;bottom:0;left:0;background:#ffe;font-size:10px;max-width:40%;z-index:9;pointer-events:none}
+</style></head>
+<body>
+<div id="log">no clicks</div>
+<table class="g" cellspacing="0" cellpadding="0" border="0">
+<script>
+// build 10x4 grid before body parses further
+let rows='';
+for(let r=0;r<4;r++){rows+='<tr>';for(let c=0;c<10;c++){rows+=`<td><button id="g-${r}-${c}">${r},${c}</button></td>`;}rows+='</tr>';}
+document.write(rows);
+</script>
+</table>
+<button id="edge-tl" style="position:fixed;top:0;left:0;z-index:5">TL</button>
+<button id="edge-br" style="position:fixed;bottom:0;right:0;z-index:5">BR</button>
+<button id="edge-midright" style="position:fixed;top:50%;right:0;z-index:5">MR</button>
+<div id="scroller" style="height:90px;width:300px;overflow:auto;border:2px solid #00f;margin-top:20px">
+  <div style="height:400px;position:relative">
+    <button id="scrolled-btn" style="position:absolute;top:330px;left:20px">DEEP IN SCROLLER</button>
+  </div>
+</div>
+<button id="fixed-btn" style="position:fixed;top:60%;left:60%;z-index:5">FIXED</button>
+<iframe id="fr" src="/frame.html" style="width:300px;height:80px;border:2px solid #f00"></iframe>
+<div id="shadow-open-host">openhost</div>
+<div id="shadow-closed-host">closedhost</div>
+<button id="page-bottom" style="margin-top:1200px;display:block">FAR BELOW (needs page scroll)</button>
+<script>
+window.clicks=[];
+function rec(e){
+  const p=(e.composedPath&&e.composedPath()[0])||e.target;
+  window.clicks.push({id:p.id||p.tagName||'?',x:e.clientX,y:e.clientY,t:Date.now(),trusted:e.isTrusted,btn:e.button});
+  document.getElementById('log').textContent=window.clicks.map(c=>c.id+'@'+c.x+','+c.y).join(' | ');
+}
+document.addEventListener('click',rec,true);
+window.lastMD=null;
+document.addEventListener('mousedown',e=>{const p=(e.composedPath&&e.composedPath()[0])||e.target;window.lastMD={id:p.id||p.tagName,x:e.clientX,y:e.clientY,trusted:e.isTrusted};},true);
+const so=document.getElementById('shadow-open-host').attachShadow({mode:'open'});
+so.innerHTML='<button id="sh-open-btn" style="width:120px;height:30px">SHADOW-OPEN</button>';
+so.addEventListener('click',e=>{window.clicks.push({id:'sh-open-btn',x:e.clientX,y:e.clientY,shadow:1,trusted:e.isTrusted});});
+const sc=document.getElementById('shadow-closed-host').attachShadow({mode:'closed'});
+sc.innerHTML='<button id="sh-closed-btn" style="width:120px;height:30px">SHADOW-CLOSED</button>';
+sc.addEventListener('click',e=>{window.clicks.push({id:'sh-closed-btn',x:e.clientX,y:e.clientY,shadow:1,trusted:e.isTrusted});});
+</script>
+</body></html>

@@ -1,0 +1,5 @@
+[
+  { "name": "csp console", "tool": "list_console_messages", "args": { "pageId": 301371092 } },
+  { "name": "iframe console", "tool": "list_console_messages", "args": { "pageId": 301371093 } },
+  { "name": "xiframe console", "tool": "list_console_messages", "args": { "pageId": 301371097 } }
+]

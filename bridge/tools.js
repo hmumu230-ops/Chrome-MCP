@@ -79,6 +79,7 @@ export const TOOLS = [
       function: { type: 'string', description: 'JS function declaration, e.g. () => document.title' },
       args: { type: 'array', items: { type: 'string' }, description: 'Element uids to pass as arguments' },
       dialogAction: { type: 'string', description: '"accept", "dismiss", or prompt text to auto-handle dialogs' },
+      timeout: { type: 'number', description: 'ms cap on the call (default 30000) — page code keeps running if it fires' },
       filePath,
     }, ['function']),
   },
@@ -149,6 +150,8 @@ export const TOOLS = [
     inputSchema: withProps({
       pageSize: { type: 'integer' }, pageIdx: { type: 'integer' },
       resourceTypes: { type: 'array', items: { type: 'string' } },
+      method: { type: 'string', description: 'Filter by HTTP method (GET/POST/…)' },
+      url: { type: 'string', description: 'Filter by URL substring (case-insensitive)' },
     }),
   },
   {
@@ -173,11 +176,14 @@ export const TOOLS = [
     name: 'emulate',
     description: 'Emulate network/CPU/geolocation/UA/color scheme/viewport/extra headers.',
     inputSchema: withProps({
-      networkConditions: { type: 'string', enum: ['Offline', 'Slow 3G', 'Fast 3G', 'Slow 4G', 'Fast 4G'] },
-      cpuThrottlingRate: { type: 'number' },
+      networkConditions: { type: 'string', enum: ['None', 'Offline', 'Slow 3G', 'Fast 3G', 'Slow 4G', 'Fast 4G'], description: "'None' clears throttling" },
+      cpuThrottlingRate: { type: 'number', description: '1 = no throttle; 1-100' },
       geolocation: { type: 'string', description: '"lat,lon"; empty clears' },
       userAgent: { type: 'string', description: 'empty clears' },
       colorScheme: { type: 'string', enum: ['dark', 'light', 'auto'] },
+      reducedMotion: { type: 'string', enum: ['reduce', 'no-preference', 'auto'], description: 'prefers-reduced-motion; auto clears' },
+      timezoneId: { type: 'string', description: 'IANA id e.g. "America/New_York"; empty clears' },
+      locale: { type: 'string', description: 'e.g. "de-DE"; empty clears' },
       viewport: { type: 'string', description: "'<w>x<h>x<dpr>[,mobile][,touch][,landscape]'" },
       extraHttpHeaders: { type: 'string', description: 'JSON string; empty clears' },
     }),

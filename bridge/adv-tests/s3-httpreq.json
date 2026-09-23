@@ -1,0 +1,21 @@
+[
+  {"label": "set probe cookie on 8199", "tool": "set_cookie", "args": {"pageId": 301371023, "name": "adv12probe", "value": "probe123"}},
+  {"label": "http_request echo (cookies ride?)", "tool": "http_request", "args": {"url": "http://127.0.0.1:8199/check"}, "pick": ["status", "url", "body"]},
+  {"label": "http_request custom header", "tool": "http_request", "args": {"url": "http://127.0.0.1:8199/hdr", "headers": {"X-Adv12": "hello"}}, "pick": ["status", "body"]},
+  {"label": "http_request set Cookie header", "tool": "http_request", "args": {"url": "http://127.0.0.1:8199/hdr", "headers": {"Cookie": "injected_by_tool=1; adv12probe=OVERRIDDEN"}}, "pick": ["status", "body"]},
+  {"label": "http_request set Host header", "tool": "http_request", "args": {"url": "http://127.0.0.1:8199/hdr", "headers": {"Host": "evil.example.com"}}, "pick": ["status", "body"]},
+  {"label": "http_request set Origin header", "tool": "http_request", "args": {"url": "http://127.0.0.1:8199/hdr", "headers": {"Origin": "https://evil.example.com"}}, "pick": ["status", "body"]},
+  {"label": "http_request header CRLF smuggle", "tool": "http_request", "args": {"url": "http://127.0.0.1:8199/hdr", "headers": {"X-Adv12": "a\r\nInjected: yes"}}, "pick": ["status", "body"]},
+  {"label": "http_request github session ride", "tool": "http_request", "args": {"url": "https://github.com/settings/profile"}, "pick": ["status", "url", "truncated"]},
+  {"label": "SSRF bridge self localhost:7890", "tool": "http_request", "args": {"url": "http://localhost:7890/"}, "pick": ["status", "body"]},
+  {"label": "SSRF metadata 169.254.169.254", "tool": "http_request", "args": {"url": "http://169.254.169.254/latest/meta-data/", "timeout": 8000}, "pick": ["status", "url", "body"]},
+  {"label": "scheme file:// win.ini", "tool": "http_request", "args": {"url": "file:///C:/Windows/win.ini"}, "pick": ["status", "body"]},
+  {"label": "scheme data:", "tool": "http_request", "args": {"url": "data:text/plain,hi"}, "pick": ["status", "body"]},
+  {"label": "scheme gopher://", "tool": "http_request", "args": {"url": "gopher://127.0.0.1/"}, "pick": ["status", "body"]},
+  {"label": "scheme ftp://", "tool": "http_request", "args": {"url": "ftp://127.0.0.1/"}, "pick": ["status", "body"]},
+  {"label": "scheme chrome://", "tool": "http_request", "args": {"url": "chrome://extensions/"}, "pick": ["status", "body"]},
+  {"label": "scheme javascript:", "tool": "http_request", "args": {"url": "javascript:alert(1)"}, "pick": ["status", "body"]},
+  {"label": "scheme bypass space ' http'", "tool": "http_request", "args": {"url": " http://127.0.0.1:8199/x"}, "pick": ["status", "body"]},
+  {"label": "scheme bypass 'http:' noslash", "tool": "http_request", "args": {"url": "http:127.0.0.1:8199/x"}, "pick": ["status", "body"]},
+  {"label": "cleanup probe cookie", "tool": "remove_cookie", "args": {"pageId": 301371023, "name": "adv12probe"}}
+]

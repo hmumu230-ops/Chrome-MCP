@@ -73,11 +73,11 @@ check('select_page', !r.error, r.error || '');
 
 console.log('== perception ==');
 r = await call('take_snapshot', { pageId });
-const linkUid = uidOf(r, /link.*Learn more/i);
+const linkUid = uidOf(r, /link.*(了解更多|Learn more)/i);
 check('take_snapshot', !!linkUid, 'link uid=' + linkUid);
 
 r = await call('extract_text', { pageId });
-check('extract_text', /Example Domain/.test(textOf(r)), `${textOf(r).length} chars`);
+check('extract_text', /示例域|Example Domain/.test(textOf(r)), `${textOf(r).length} chars`);
 
 // Inject test fixtures: form fields, button, file input, drag pair, spacer.
 r = await call('evaluate_script', {
@@ -150,6 +150,7 @@ check('type_text', !r.error, r.error || '');
 r = await call('press_key', { pageId, key: 'Control+A' });
 check('press_key', !r.error, r.error || '');
 
+check('drag uids found', !!(dragUid && dropUid), `drag=${dragUid} drop=${dropUid}`);
 r = await call('drag', { pageId, from_uid: dragUid || 'e1', to_uid: dropUid || 'e2' });
 check('drag', !r.error, r.error || 'runs');
 
@@ -255,7 +256,7 @@ console.log('== navigation / resize / stale-uid ==');
 r = await call('navigate_page', { pageId, type: 'url', url: 'https://example.com/' });
 await sleep(1200);
 r = await call('take_snapshot', { pageId });
-const lmUid = uidOf(r, /Learn more/i);
+const lmUid = uidOf(r, /了解更多|Learn more/i);
 r = await call('click', { pageId, uid: lmUid });
 check('navigate via link click', !r.error, r.error || '');
 await sleep(5000);

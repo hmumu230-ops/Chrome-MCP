@@ -1,0 +1,9 @@
+[
+  { "name": "empty call check", "tool": "evaluate_script", "args": { "pageId": 301370503, "function": "() => { console.log('MARKER-BEFORE'); console.log(); console.log('MARKER-AFTER'); return 'ok'; }" }, "sleep": 1200 },
+  { "name": "list tail after empty", "tool": "list_console_messages", "args": { "pageId": 301370503, "pageSize": 12, "pageIdx": 44 } },
+  { "name": "emit errors", "tool": "evaluate_script", "args": { "pageId": 301370503, "function": "() => { if (window.__adv16err) return 'dup'; window.__adv16err = 1; setTimeout(()=>{ throw new Error('UNCAUGHT-ADV16') },10); Promise.reject(new Error('UNHANDLED-REJ-ADV16')); fetch('http://127.0.0.1:1/dead-port').catch(()=>{}); fetch('http://localhost:8126/definitely-missing-404').catch(()=>{}); return 'emitted-errors'; }" }, "sleep": 2500 },
+  { "name": "list after errors", "tool": "list_console_messages", "args": { "pageId": 301370503, "pageSize": 14, "pageIdx": 45 } },
+  { "name": "get_console_message 532", "tool": "get_console_message", "args": { "pageId": 301370503, "msgid": 532 } },
+  { "name": "filter types warning", "tool": "list_console_messages", "args": { "pageId": 301370503, "types": ["warning"], "pageSize": 5 } },
+  { "name": "filter types warn", "tool": "list_console_messages", "args": { "pageId": 301370503, "types": ["warn"], "pageSize": 5 } }
+]

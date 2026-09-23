@@ -1,0 +1,11 @@
+[
+ {"name":"cleanup-old","tool":"close_page","args":{"pageId":301371108},"timeoutMs":10000},
+ {"name":"cleanup-old2","tool":"close_page","args":{"pageId":301371084},"timeoutMs":10000},
+ {"name":"A2-mkpage","tool":"new_page","args":{"url":"http://127.0.0.1:8128/"},"timeoutMs":20000,"retry":120000,"store":{"PID":"pageId"}},
+ {"name":"A2-eval-alert","tool":"evaluate_script","args":{"pageId":"$PID","function":"() => { alert('PREATTACH-X'); return 'ret-X'; }"},"timeoutMs":110000,"await_":false},
+ {"sleep":2000},
+ {"name":"A2-handle-accept-60s","tool":"handle_dialog","args":{"pageId":"$PID","action":"accept"},"timeoutMs":60000},
+ {"collect":true,"collectMs":60000},
+ {"name":"A2-snap","tool":"take_snapshot","args":{"pageId":"$PID"},"timeoutMs":15000},
+ {"name":"A2-close","tool":"close_page","args":{"pageId":"$PID"},"timeoutMs":15000}
+]

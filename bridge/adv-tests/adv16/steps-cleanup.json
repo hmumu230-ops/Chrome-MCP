@@ -1,0 +1,6 @@
+[
+  { "name": "close early tab", "tool": "close_page", "args": { "pageId": 301370503 } },
+  { "name": "close csp tab", "tool": "close_page", "args": { "pageId": 301371092 } },
+  { "name": "close iframe tab", "tool": "close_page", "args": { "pageId": 301371093 } },
+  { "name": "close xiframe tab", "tool": "close_page", "args": { "pageId": 301371097 } }
+]

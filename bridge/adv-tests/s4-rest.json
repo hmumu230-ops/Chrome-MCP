@@ -1,0 +1,9 @@
+[
+  {"label": "github session ride (retry)", "tool": "http_request", "args": {"url": "https://github.com/settings/profile"}, "pick": ["status", "url", "truncated"]},
+  {"label": "github api user (cookie auth?)", "tool": "http_request", "args": {"url": "https://api.github.com/user"}, "pick": ["status", "url", "truncated"]},
+  {"label": "recursive MCP POST init", "tool": "http_request", "args": {"url": "http://127.0.0.1:7890/mcp", "method": "POST", "headers": {"content-type": "application/json", "accept": "application/json, text/event-stream"}, "body": "{\"jsonrpc\":\"2.0\",\"id\":99,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-03-26\",\"capabilities\":{},\"clientInfo\":{\"name\":\"self\",\"version\":\"0\"}}}"}, "pick": ["status", "body"]},
+  {"label": "incognito new_page", "tool": "new_page", "args": {"url": "https://example.com/#adv12inc", "isolatedContext": "adv12"}},
+  {"label": "chrome:// tab get_cookies", "tool": "get_cookies", "args": {"pageId": 301370487}},
+  {"label": "get_cookies bogus pageId", "tool": "get_cookies", "args": {"pageId": 999999999}},
+  {"label": "remove_cookie on github session (DO NOT RUN)", "tool": "get_cookies", "args": {"pageId": 301370170, "name": "nonexistent_adv12"}}
+]

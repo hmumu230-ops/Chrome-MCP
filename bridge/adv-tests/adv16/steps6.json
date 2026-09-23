@@ -1,0 +1,7 @@
+[
+  { "name": "flood head", "tool": "list_console_messages", "args": { "pageId": 301370503, "pageSize": 6, "pageIdx": 5 } },
+  { "name": "flood tail", "tool": "list_console_messages", "args": { "pageId": 301370503, "pageSize": 10, "pageIdx": 52 } },
+  { "name": "flood beyond", "tool": "list_console_messages", "args": { "pageId": 301370503, "pageSize": 10, "pageIdx": 53 } },
+  { "name": "emit edges", "tool": "evaluate_script", "args": { "pageId": 301370503, "function": "() => { if (window.__adv16e) return 'dup'; window.__adv16e = 1; console.log('LONGSTR-' + 'x'.repeat(1048576)); console.log('ANSI \\u001b[31mred\\u001b[0m and\\nnewline\\ttab'); console.log(Symbol('sym')); const c={name:'circ'}; c.self=c; console.log(c); console.log('negzero', -0, 0/-1); console.log('fmt %s %d %o %c end', 'STR', 42, {o:1}, 'color:red'); const mut={v:'BEFORE'}; console.log(mut); mut.v='AFTER'; console.log('empty-str:', ''); console.log(); return 'emitted-edges'; }" }, "sleep": 1500 },
+  { "name": "list edges", "tool": "list_console_messages", "args": { "pageId": 301370503, "pageSize": 12, "pageIdx": 44 } }
+]

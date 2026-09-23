@@ -1,0 +1,4 @@
+[
+  { "name": "csp console recheck", "tool": "list_console_messages", "args": { "pageId": 301371092 } },
+  { "name": "nav-b full list", "tool": "list_console_messages", "args": { "pageId": 301370503, "pageSize": 4, "pageIdx": 250 } }
+]

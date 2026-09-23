@@ -1,0 +1,9 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>adv05-frame</title></head>
+<body style="margin:0">
+<button id="frame-btn" style="width:120px;height:30px">IFRAME-BTN</button>
+<script>
+window.frameClicks=[];
+document.addEventListener('click',e=>{window.frameClicks.push({id:e.target.id,x:e.clientX,y:e.clientY});},true);
+</script>
+</body></html>

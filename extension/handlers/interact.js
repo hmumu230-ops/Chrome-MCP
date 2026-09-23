@@ -1,13 +1,55 @@
 // Interaction tools — injected DOM library + scripting API.
 // Element uids may live in iframes; frameFor() routes calls to the right frame.
 import { ensureLib, runInPage, runInAllFrames, frameFor, checkUid } from './util.js';
-import { cdp, ensureDebugger, getSession } from './cdp.js';
+import { cdp, ensureDebugger, getSession, hasOpenDialog } from './cdp.js';
 // Static import: dynamic import() is disallowed in MV3 service workers.
 import { snapshotTools } from './snapshot.js';
 
 async function snapshotMaybe(pageId, include) {
   if (!include) return undefined;
   return snapshotTools.take_snapshot({ pageId });
+}
+
+// CDP Input.dispatchKeyEvent needs real code/windowsVirtualKeyCode values —
+// a blanket 'Key'+upper() produces invalid codes ('KeyARROWLEFT') that CDP
+// rejects, silently dropping into the lossy synthetic path.
+const CDP_KEYS = {};
+for (const [k, code, wvk, text] of [
+  ['Enter', 'Enter', 13, '\r'], ['Tab', 'Tab', 9], ['Escape', 'Escape', 27],
+  ['Backspace', 'Backspace', 8], ['Delete', 'Delete', 46], [' ', 'Space', 32, ' '],
+  ['ArrowLeft', 'ArrowLeft', 37], ['ArrowUp', 'ArrowUp', 38], ['ArrowRight', 'ArrowRight', 39], ['ArrowDown', 'ArrowDown', 40],
+  ['Home', 'Home', 36], ['End', 'End', 35], ['PageUp', 'PageUp', 33], ['PageDown', 'PageDown', 34],
+  ['Insert', 'Insert', 45], ['Shift', 'ShiftLeft', 16], ['Control', 'ControlLeft', 17], ['Alt', 'AltLeft', 18],
+]) CDP_KEYS[k] = { key: k, code, windowsVirtualKeyCode: wvk, text };
+for (let i = 1; i <= 12; i++) CDP_KEYS['F' + i] = { key: 'F' + i, code: 'F' + i, windowsVirtualKeyCode: 111 + i };
+
+// Serialize trusted input per tab: interleaved press/release pairs from
+// parallel calls get coalesced by Chrome — a click reported ok that never
+// landed. Queueing makes each press→release pair atomic.
+const inputQueues = new Map();
+function queueInput(pageId, fn) {
+  const prev = inputQueues.get(pageId) || Promise.resolve();
+  const next = prev.catch(() => {}).then(fn);
+  inputQueues.set(pageId, next.catch(() => {}));
+  return next;
+}
+
+function cdpKeyDef(k, modifiers) {
+  const known = CDP_KEYS[k];
+  if (known) return known;
+  if (k.length === 1) {
+    const up = k.toUpperCase();
+    const isLetter = /[A-Z]/.test(up), isDigit = /[0-9]/.test(up);
+    return {
+      key: k,
+      // Only letters/digits have predictable code names; symbols omit code
+      // rather than emit an invalid one.
+      code: isLetter ? 'Key' + up : isDigit ? 'Digit' + up : undefined,
+      windowsVirtualKeyCode: (isLetter || isDigit) ? up.charCodeAt(0) : 0,
+      text: modifiers === 0 ? k : undefined,
+    };
+  }
+  return { key: k, windowsVirtualKeyCode: 0 };
 }
 
 // Run fn(u, ...extra) in the frame that owns uid. If the mapped frame no
@@ -34,13 +76,18 @@ export const interactTools = {
     // isTrusted checks. Falls back to synthetic events silently.
     const tab = await chrome.tabs.get(pageId).catch(() => null);
     if (getSession(pageId) && tab && tab.active) {
+      // CDP input queues behind an open JS dialog — fail fast instead of
+      // hanging 25s+ on the modal loop.
+      if (hasOpenDialog(pageId)) throw new Error('a JavaScript dialog is open on this page — call handle_dialog first');
       let viaCdp = false;
       try {
         const { data: pt } = await inFrameOf(pageId, uid, (u) => window.__mcp.tryCall('box', u));
-        for (let i = 0; i < (dblClick ? 2 : 1); i++) {
-          await cdp(pageId, 'Input.dispatchMouseEvent', { type: 'mousePressed', x: pt.cx, y: pt.cy, button: 'left', clickCount: i + 1 });
-          await cdp(pageId, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x: pt.cx, y: pt.cy, button: 'left', clickCount: i + 1 });
-        }
+        await queueInput(pageId, async () => {
+          for (let i = 0; i < (dblClick ? 2 : 1); i++) {
+            await cdp(pageId, 'Input.dispatchMouseEvent', { type: 'mousePressed', x: pt.cx, y: pt.cy, button: 'left', clickCount: i + 1 });
+            await cdp(pageId, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x: pt.cx, y: pt.cy, button: 'left', clickCount: i + 1 });
+          }
+        });
         viaCdp = true;
       } catch {}
       // snapshotMaybe AFTER the try: a snapshot failure must not drop into
@@ -131,6 +178,7 @@ export const interactTools = {
     // visible — Chrome drops Input.* events on background tabs.
     const tab = await chrome.tabs.get(pageId).catch(() => null);
     if (getSession(pageId) && tab && tab.active) {
+      if (hasOpenDialog(pageId)) throw new Error('a JavaScript dialog is open on this page — call handle_dialog first');
       try {
         const parts = key.split('+');
         const k = parts.pop();
@@ -143,10 +191,11 @@ export const interactTools = {
           else if (mm === 'meta' || mm === 'cmd') modifiers |= mods.meta;
           else if (mm === 'shift') modifiers |= mods.shift;
         }
-        const keyDefs = { Enter: { key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, text: '\r' }, Tab: { key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9 }, Escape: { key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 }, Backspace: { key: 'Backspace', code: 'Backspace', windowsVirtualKeyCode: 8 }, Delete: { key: 'Delete', code: 'Delete', windowsVirtualKeyCode: 46 } };
-        const def = keyDefs[k] || { key: k, code: 'Key' + k.toUpperCase(), windowsVirtualKeyCode: k.length === 1 ? k.toUpperCase().charCodeAt(0) : 0, text: modifiers === 0 && k.length === 1 ? k : undefined };
-        await cdp(pageId, 'Input.dispatchKeyEvent', { type: 'keyDown', modifiers, ...def });
-        await cdp(pageId, 'Input.dispatchKeyEvent', { type: 'keyUp', modifiers, ...def });
+        const def = cdpKeyDef(k, modifiers);
+        await queueInput(pageId, async () => {
+          await cdp(pageId, 'Input.dispatchKeyEvent', { type: 'keyDown', modifiers, ...def });
+          await cdp(pageId, 'Input.dispatchKeyEvent', { type: 'keyUp', modifiers, ...def });
+        });
         return { pressed: key, via: 'cdp' };
       } catch {}
     }
@@ -184,14 +233,22 @@ export const interactTools = {
       throw new Error('filePaths must be a non-empty array of path strings');
     }
     await ensureLib(pageId);
-    checkUid(pageId, uid);
+    const fid = checkUid(pageId, uid);
     await ensureDebugger(pageId, ['DOM', 'Page']);
-    const doc = await cdp(pageId, 'DOM.getDocument', { depth: -1 });
-    // Escape the uid for selector context — raw interpolation allowed selector injection.
-    const sel = '[data-mcp-uid="' + String(uid).replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"]';
-    const { nodeId } = await cdp(pageId, 'DOM.querySelector', { nodeId: doc.root.nodeId, selector: sel });
-    if (!nodeId) throw new Error('file input not found: ' + uid);
-    await cdp(pageId, 'DOM.setFileInputFiles', { files: filePaths, nodeId });
+    // Resolve the REAL element in the isolated world and stamp a one-time
+    // token — page JS can forge data-mcp-uid clones onto decoy file inputs,
+    // which would exfiltrate the uploaded local file's contents.
+    const { data: tok } = await inFrameOf(pageId, uid, (u) => window.__mcp.tryCall('stamp', u));
+    let nodeId = 0;
+    try {
+      const doc = await cdp(pageId, 'DOM.getDocument', { depth: -1 });
+      const { nodeIds } = await cdp(pageId, 'DOM.querySelectorAll', { nodeId: doc.root.nodeId, selector: '[' + tok + ']' });
+      if (!nodeIds || nodeIds.length !== 1) throw new Error('file input uid contested (possible page forgery): ' + uid);
+      nodeId = nodeIds[0];
+      await cdp(pageId, 'DOM.setFileInputFiles', { files: filePaths, nodeId });
+    } finally {
+      await inFrameOf(pageId, uid, (t) => window.__mcp.tryCall('unstamp', t), [[tok]]).catch(() => {});
+    }
     return { uploaded: filePaths, uid };
   },
 };

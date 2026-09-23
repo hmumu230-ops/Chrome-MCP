@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>adv14 dialogs</title></head>
+<body>
+<h1>Dialog edge-case test page</h1>
+<div id="log" style="white-space:pre;font-family:monospace"></div>
+<script>
+const log = m => { document.getElementById('log').textContent += m + '\n'; };
+window.addEventListener('load', () => log('page loaded ' + location.href));
+
+// buttons
+const mk = (id, label, fn) => {
+  const b = document.createElement('button');
+  b.id = id; b.textContent = label; b.style.display = 'block'; b.style.margin = '4px';
+  b.onclick = fn; document.body.appendChild(b);
+};
+
+mk('btn-alert', 'alert()', () => { alert('ALERT-ONE'); log('alert returned'); });
+mk('btn-confirm', 'confirm()', () => { const r = confirm('CONFIRM-OK?'); log('confirm->' + r); });
+mk('btn-prompt', 'prompt()', () => { const r = prompt('PROMPT-ENTER', 'defval'); log('prompt->' + JSON.stringify(r)); });
+mk('btn-nested', 'nested dialogs', () => {
+  alert('NESTED-1');
+  const c = confirm('NESTED-2');
+  alert('NESTED-3 confirm=' + c);
+  log('nested done');
+});
+mk('btn-spam', 'alert spam x10', () => {
+  for (let i = 0; i < 10; i++) alert('SPAM-' + i);
+  log('spam done');
+});
+mk('btn-print', 'print()', () => { try { window.print(); } catch (e) { log('print err ' + e); } log('print returned'); });
+mk('btn-onload-alert', 'open onload-alert page', () => { location.href = '/onload.html'; });
+mk('btn-beforeunload', 'arm beforeunload', () => {
+  window.onbeforeunload = (e) => { e.preventDefault(); e.returnValue = 'dirty'; return 'dirty'; };
+  log('beforeunload armed');
+});
+mk('btn-disarm', 'disarm beforeunload', () => { window.onbeforeunload = null; log('disarmed'); });
+mk('btn-popup', 'window.open popup', () => {
+  const w = window.open('/popup.html', 'adv14popup', 'width=400,height=300');
+  log('popup opened: ' + !!w);
+});
+mk('btn-modal', 'showModalDialog/overlay', () => {
+  if (window.showModalDialog) { try { window.showModalDialog('/popup.html'); } catch (e) { log('smd err ' + e); } }
+  else {
+    const d = document.createElement('dialog');
+    d.innerHTML = '<p>HTML dialog element (not a JS modal)</p><button onclick="this.parentElement.close()">close</button>';
+    document.body.appendChild(d); d.showModal();
+    log('html <dialog> shown');
+  }
+});
+mk('btn-fullscreen', 'requestFullscreen', () => {
+  document.documentElement.requestFullscreen().then(() => log('fullscreen ok')).catch(e => log('fullscreen err ' + e));
+});
+mk('btn-notify', 'Notification permission', () => {
+  Notification.requestPermission().then(p => log('notify perm: ' + p));
+});
+mk('btn-geo', 'geolocation', () => {
+  navigator.geolocation.getCurrentPosition(p => log('geo ok'), e => log('geo err ' + e.message));
+});
+mk('btn-alert-async', 'alert in 500ms', () => { setTimeout(() => alert('ASYNC-ALERT'), 500); log('async armed'); });
+</script>
+</body>
+</html>

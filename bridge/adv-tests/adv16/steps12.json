@@ -1,0 +1,8 @@
+[
+  { "name": "nav to nav-a", "tool": "navigate_page", "args": { "pageId": 301370503, "type": "url", "url": "http://localhost:8126/nav-a" }, "sleep": 2000 },
+  { "name": "console after nav-a", "tool": "list_console_messages", "args": { "pageId": 301370503 } },
+  { "name": "nav to nav-b", "tool": "navigate_page", "args": { "pageId": 301370503, "type": "url", "url": "http://localhost:8126/nav-b" }, "sleep": 2000 },
+  { "name": "console after nav-b", "tool": "list_console_messages", "args": { "pageId": 301370503 } },
+  { "name": "reload nav-b", "tool": "navigate_page", "args": { "pageId": 301370503, "type": "reload" }, "sleep": 2000 },
+  { "name": "console after reload", "tool": "list_console_messages", "args": { "pageId": 301370503 } }
+]

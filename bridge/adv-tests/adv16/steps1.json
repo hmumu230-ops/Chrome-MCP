@@ -1,0 +1,4 @@
+[
+  { "name": "open /early tab", "tool": "new_page", "args": { "url": "http://localhost:8126/early" }, "sleep": 2500 },
+  { "name": "list_pages", "tool": "list_pages", "args": {} }
+]

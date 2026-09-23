@@ -1,0 +1,28 @@
+[
+ {"name":"C1-mkpage","tool":"new_page","args":{"url":"http://127.0.0.1:8128/"},"timeoutMs":20000,"retry":180000,"store":{"PID":"pageId"}},
+ {"name":"C1-snap","tool":"take_snapshot","args":{"pageId":"$PID"},"timeoutMs":20000},
+ {"name":"C1-getuid","tool":"evaluate_script","args":{"pageId":"$PID","function":"() => document.getElementById('btn-alert').getAttribute('data-mcp-uid')"},"timeoutMs":15000,"store":{"BTN":"result"}},
+ {"name":"C1-click-synthetic-alert","tool":"click","args":{"pageId":"$PID","uid":"$BTN"},"timeoutMs":30000,"await_":false},
+ {"sleep":3000},
+ {"name":"C1-snap-during","tool":"take_snapshot","args":{"pageId":"$PID"},"timeoutMs":12000},
+ {"name":"C1-handle","tool":"handle_dialog","args":{"pageId":"$PID","action":"accept"},"timeoutMs":45000},
+ {"collect":true,"collectMs":40000},
+ {"name":"C1-close","tool":"close_page","args":{"pageId":"$PID"},"timeoutMs":15000},
+
+ {"name":"C2-mkpage","tool":"new_page","args":{"url":"http://127.0.0.1:8128/"},"timeoutMs":20000,"store":{"PID":"pageId"}},
+ {"name":"C2-attachdbg","tool":"list_console_messages","args":{"pageId":"$PID"},"timeoutMs":20000},
+ {"name":"C2-snap","tool":"take_snapshot","args":{"pageId":"$PID"},"timeoutMs":20000},
+ {"name":"C2-getuid","tool":"evaluate_script","args":{"pageId":"$PID","function":"() => document.getElementById('btn-alert').getAttribute('data-mcp-uid')"},"timeoutMs":15000,"store":{"BTN":"result"}},
+ {"name":"C2-click-cdp-alert","tool":"click","args":{"pageId":"$PID","uid":"$BTN"},"timeoutMs":20000},
+ {"sleep":2000},
+ {"name":"C2-handle","tool":"handle_dialog","args":{"pageId":"$PID","action":"accept"},"timeoutMs":15000},
+ {"name":"C2-snap-after","tool":"take_snapshot","args":{"pageId":"$PID"},"timeoutMs":15000},
+
+ {"name":"C3-eval-alert","tool":"evaluate_script","args":{"pageId":"$PID","function":"() => { alert('DETACH-TEST'); return 'ret-detach'; }"},"timeoutMs":90000,"await_":false},
+ {"sleep":2000},
+ {"name":"C3-detach","tool":"detach_debugger","args":{"pageId":"$PID"},"timeoutMs":15000},
+ {"name":"C3-handle-reattach","tool":"handle_dialog","args":{"pageId":"$PID","action":"accept"},"timeoutMs":45000},
+ {"collect":true,"collectMs":30000},
+ {"name":"C3-snap","tool":"take_snapshot","args":{"pageId":"$PID"},"timeoutMs":15000},
+ {"name":"C3-close","tool":"close_page","args":{"pageId":"$PID"},"timeoutMs":15000}
+]
