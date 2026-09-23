@@ -1,5 +1,8 @@
 ﻿# Chrome MCP
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![test](https://github.com/hmumu230-ops/Chrome-MCP/actions/workflows/test.yml/badge.svg)](https://github.com/hmumu230-ops/Chrome-MCP/actions/workflows/test.yml)
+
 把当前这个 Chrome 暴露为通用 MCP server —— 任何支持 MCP 的客户端（Devin、Claude Code、Cursor、ChatGPT、自研 agent…）都连同一个端点，浏览器插件只装一次。
 
 > **English:** Chrome MCP turns your everyday Chrome into a universal [MCP](https://modelcontextprotocol.io) server. A small MV3 extension plus a local Node bridge expose `http://127.0.0.1:7890/mcp` — one Streamable HTTP endpoint that any MCP client can connect to, operating your real tabs, cookies and login sessions. 37 tools: DOM snapshots with element uids, clicking/filling/typing, screenshots, network & console capture, cookies, downloads, PDF export, CDP-powered emulation and performance traces — across iframes, with stale-uid detection and debugger lifecycle management. Docs below are in Chinese; the tool surface and protocol are standard MCP.
@@ -12,7 +15,7 @@ MCP 客户端 ── Streamable HTTP ──▶ bridge (node index.js, :7890)
                                       ▼
                               Chrome 扩展 (MV3)
                               ├─ chrome.tabs/scripting → 导航/点击/填表/快照/截图（无横幅）
-                              └─ chrome.debugger (CDP) → 网络/控制台/模拟/性能/堆快照/弹窗
+                              └─ chrome.debugger (CDP) → 网络/控制台/模拟/性能/PDF/弹窗
 ```
 
 扩展不能接受入站连接，所以必须有一个本地桥进程；桥对客户端暴露标准 MCP，对扩展暴露 WebSocket。
@@ -79,4 +82,15 @@ iframe 内元素 uid 形如 `f3e1`（`f<frameId>` 前缀），交互工具自动
 - 合成事件 `isTrusted=false`；click/press_key 在调试器附着且 tab 前台时自动升级为 CDP `Input.*` 可信输入（Chrome 不向后台 tab 投递 Input 事件）。
 - OOPIF（跨进程跨域 iframe）内的 file 上传和 CDP 网络采集不可达（chrome.debugger 只够到主 target；快照/交互不受此限）。
 - `evaluate_script` 的 `args` 传元素 uid；多 frame 时用 `frameId` 或首参数 uid 自动定位 frame。
+- 隐身窗口需在 `chrome://extensions` 手动开「在隐身模式下启用」，`new_page isolatedContext` 才可用。
 - 未实现：Lighthouse 审计、语义搜索（mcp-chrome 的向量检索）、录制回放、OOPIF flat-session CDP——按需再加。
+
+## 测试
+
+```bat
+cd bridge
+node smoke-test.mjs    :: 协议冒烟：initialize / tools/list / 未接扩展时的报错
+node full-test.mjs     :: 端到端 60 项检查（需 Chrome 已加载扩展），覆盖全部 37 个工具
+```
+
+CI 在每次 push/PR 自动跑语法检查 + 冒烟测试（`.github/workflows/test.yml`）。

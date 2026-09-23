@@ -40,7 +40,7 @@ export class WSClient {
     this.ws.onopen = () => {
       this.connected = true;
       this.backoff = 1000;
-      this.send({ type: 'hello', name: 'universal-browser-mcp-extension', version: chrome.runtime.getManifest().version });
+      this.send({ type: 'hello', name: 'chrome-mcp-extension', version: chrome.runtime.getManifest().version });
     };
     this.ws.onmessage = (ev) => {
       let msg;

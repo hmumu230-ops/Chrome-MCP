@@ -206,7 +206,7 @@ const ANNOTATIONS = {
 
 function createMcpServer() {
   const server = new Server(
-    { name: 'universal-browser-mcp', version: '0.1.0' },
+    { name: 'chrome-mcp', version: '0.1.0' },
     { capabilities: { tools: {} } },
   );
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -271,7 +271,7 @@ const httpServer = http.createServer(async (req, res) => {
 
   if (url.pathname === '/' && req.method === 'GET') {
     res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({
-      name: 'universal-browser-mcp-bridge',
+      name: 'chrome-mcp-bridge',
       mcpEndpoint: `http://${HOST}:${PORT}/mcp`,
       extensionConnected: !!(extSocket && extSocket.readyState === 1),
       sessions: transports.size,

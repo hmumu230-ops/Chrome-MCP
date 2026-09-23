@@ -1,0 +1,33 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: bridge/package-lock.json
+
+      - name: Syntax-check extension JS
+        run: |
+          for f in $(find extension -name '*.js'); do node --check "$f"; done
+
+      - name: Install bridge deps
+        working-directory: bridge
+        run: npm ci
+
+      - name: Start bridge
+        working-directory: bridge
+        run: nohup node index.js > bridge.log 2>&1 & sleep 2; cat bridge.log
+
+      - name: Smoke test (MCP handshake, tool list, security headers)
+        working-directory: bridge
+        run: node smoke-test.mjs
