@@ -94,10 +94,9 @@ export const miscTools = {
 
   async extract_text({ pageId, selector }) {
     await ensureLib(pageId);
-    const frames = await runInAllFrames(pageId, (sel) => {
-      try { return window.__mcp.extractText(sel); } catch { return null; }
-    }, [selector]);
-    const main = frames.find(f => f.frameId === 0 && f.result);
+    const frames = await runInAllFrames(pageId, (sel) => window.__mcp.tryCall('extractText', sel), [selector]);
+    const main = frames.find(f => f.frameId === 0);
+    if (main && main.error) throw new Error(main.error);
     const subs = frames.filter(f => f.frameId !== 0 && f.result && f.result.text);
     const out = { ...(main ? main.result : { url: '', title: '', text: '' }) };
     if (subs.length) out.frames = subs.map(f => ({ frameId: f.frameId, url: f.result.url, text: f.result.text }));

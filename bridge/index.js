@@ -57,8 +57,6 @@ function wsAllowed(req) {
   const url = new URL(req.url, `http://${HOST}:${PORT}`);
   if (url.pathname !== '/ws') return false;
   if (!localHostOnly(req)) return false;
-  // Single-slot: one extension channel only.
-  if (extSocket && extSocket.readyState === 1) return false;
   const origin = req.headers.origin;
   // Browsers always send Origin on WS upgrade; the MV3 service worker sends
   // chrome-extension://<id>. Anything else with an Origin header is a webpage
@@ -86,7 +84,21 @@ let seq = 0;
 const pending = new Map();
 const MAX_PENDING = 256;
 
-function callExtension(tool, args) {
+function waitForSocket(ms) {
+  return new Promise((resolve) => {
+    const t0 = Date.now();
+    (function poll() {
+      if (extSocket && extSocket.readyState === 1) return resolve(true);
+      if (Date.now() - t0 > ms) return resolve(false);
+      setTimeout(poll, 100);
+    })();
+  });
+}
+
+async function callExtension(tool, args) {
+  // SW restarts drop the socket briefly; wait for the reconnect (fast with
+  // last-wins) before failing — only safe to retry here because nothing was sent.
+  if (!extSocket || extSocket.readyState !== 1) await waitForSocket(2500);
   return new Promise((resolve, reject) => {
     if (!extSocket || extSocket.readyState !== 1) {
       return reject(new Error('Chrome extension not connected — load the extension in Chrome and keep Chrome open.'));
@@ -104,6 +116,11 @@ function callExtension(tool, args) {
 
 const wss = new WebSocketServer({ noServer: true });
 wss.on('connection', (ws) => {
+  // Single-slot, last-wins: a fresh connection replaces a stale one. This
+  // heals reconnects where the old socket hasn't noticed the peer died yet.
+  if (extSocket && extSocket !== ws) {
+    try { extSocket.terminate(); } catch {}
+  }
   extSocket = ws;
   console.log('[bridge] extension connected');
   ws.on('message', (raw) => {
@@ -173,7 +190,7 @@ const ANNOTATIONS = {
   get_cookies: { readOnlyHint: true },
   list_downloads: { readOnlyHint: true },
   extract_text: { readOnlyHint: true },
-  take_heapsnapshot: { readOnlyHint: true },
+
   close_page: { destructiveHint: true },
   remove_cookie: { destructiveHint: true },
   handle_dialog: { destructiveHint: true },

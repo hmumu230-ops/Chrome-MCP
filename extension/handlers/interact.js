@@ -34,40 +34,34 @@ export const interactTools = {
     const tab = await chrome.tabs.get(pageId).catch(() => null);
     if (getSession(pageId) && tab && tab.active) {
       try {
-        const { data: pt } = await inFrameOf(pageId, uid, (u) => {
-          const el = window.__mcp.find(u);
-          if (!el) throw new Error('element not found: ' + u);
-          el.scrollIntoView({ block: 'center', inline: 'center' });
-          const r = el.getBoundingClientRect();
-          return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
-        });
+        const { data: pt } = await inFrameOf(pageId, uid, (u) => window.__mcp.tryCall('box', u));
         for (let i = 0; i < (dblClick ? 2 : 1); i++) {
-          await cdp(pageId, 'Input.dispatchMouseEvent', { type: 'mousePressed', x: pt.x, y: pt.y, button: 'left', clickCount: i + 1 });
-          await cdp(pageId, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x: pt.x, y: pt.y, button: 'left', clickCount: i + 1 });
+          await cdp(pageId, 'Input.dispatchMouseEvent', { type: 'mousePressed', x: pt.cx, y: pt.cy, button: 'left', clickCount: i + 1 });
+          await cdp(pageId, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x: pt.cx, y: pt.cy, button: 'left', clickCount: i + 1 });
         }
         return { clicked: uid, via: 'cdp', snapshot: await snapshotMaybe(pageId, includeSnapshot) };
       } catch {}
     }
-    await inFrameOf(pageId, uid, (u, d) => window.__mcp.click(u, d), [!!dblClick]);
+    await inFrameOf(pageId, uid, (u, d) => window.__mcp.tryCall('click', u, d), [!!dblClick]);
     return { clicked: uid, via: 'synthetic', snapshot: await snapshotMaybe(pageId, includeSnapshot) };
   },
 
   async hover({ pageId, uid, includeSnapshot }) {
     await ensureLib(pageId);
-    await inFrameOf(pageId, uid, (u) => window.__mcp.hover(u));
+    await inFrameOf(pageId, uid, (u) => window.__mcp.tryCall('hover', u));
     return { hovered: uid, snapshot: await snapshotMaybe(pageId, includeSnapshot) };
   },
 
   async drag({ pageId, from_uid, to_uid, includeSnapshot }) {
     await ensureLib(pageId);
     // Cross-frame drag is not supported; both uids must be in one frame.
-    await inFrameOf(pageId, from_uid, (a, b) => window.__mcp.dragTo(a, b), [to_uid]);
+    await inFrameOf(pageId, from_uid, (a, b) => window.__mcp.tryCall('dragTo', a, b), [to_uid]);
     return { dragged: from_uid, onto: to_uid, snapshot: await snapshotMaybe(pageId, includeSnapshot) };
   },
 
   async fill({ pageId, uid, value, includeSnapshot }) {
     await ensureLib(pageId);
-    await inFrameOf(pageId, uid, (u, v) => window.__mcp.fill(u, v), [String(value)]);
+    await inFrameOf(pageId, uid, (u, v) => window.__mcp.tryCall('fill', u, v), [String(value)]);
     return { filled: uid, snapshot: await snapshotMaybe(pageId, includeSnapshot) };
   },
 
@@ -83,12 +77,14 @@ export const interactTools = {
     const results = [];
     for (const [fid, els] of groups) {
       const { data } = await runInPage(pageId, (list) => {
-        const out = [];
-        for (const { uid, value } of list) {
-          try { window.__mcp.fill(uid, String(value)); out.push({ uid, ok: true }); }
-          catch (e) { out.push({ uid, ok: false, error: String(e.message || e) }); }
-        }
-        return out;
+        try {
+          const out = [];
+          for (const { uid, value } of list) {
+            try { window.__mcp.fill(uid, String(value)); out.push({ uid, ok: true }); }
+            catch (e) { out.push({ uid, ok: false, error: String(e.message || e) }); }
+          }
+          return { __ok: true, v: out };
+        } catch (e) { return { __ok: false, err: String(e && e.message || e) }; }
       }, [els], fid);
       results.push(...data);
     }
@@ -97,15 +93,25 @@ export const interactTools = {
 
   async type_text({ pageId, text, submitKey }) {
     await ensureLib(pageId);
-    // Type into whichever frame holds focus.
+    // Type into the frame whose activeElement is editable. Don't gate on
+    // document.hasFocus() — it's false whenever the OS window is blurred
+    // (e.g. agent runs while another app is focused), but DOM focus persists.
     const frames = await runInAllFrames(pageId, (t) => {
-      if (!document.hasFocus()) return false;
-      try { return !!window.__mcp.typeText(t); } catch { return false; }
+      try {
+        const el = document.activeElement;
+        if (!el || el === document.body || el === document.documentElement) return { __ok: true, v: false };
+        if (!(el.isContentEditable || el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) return { __ok: true, v: false };
+        return { __ok: true, v: !!window.__mcp.typeText(t) };
+      } catch (e) { return { __ok: false, err: String(e && e.message || e) }; }
     }, [text]);
     if (!frames.some(f => f.result)) throw new Error('no focused editable element');
     if (submitKey) {
       await runInAllFrames(pageId, (k) => {
-        if (document.hasFocus()) window.__mcp.pressKey(k);
+        try {
+          const el = document.activeElement;
+          if (el && el !== document.body && el !== document.documentElement) window.__mcp.pressKey(k);
+          return { __ok: true, v: true };
+        } catch (e) { return { __ok: false, err: String(e && e.message || e) }; }
       }, [submitKey]);
     }
     return { typed: text.length, submitKey: submitKey || null };
@@ -136,14 +142,19 @@ export const interactTools = {
       } catch {}
     }
     await ensureLib(pageId);
-    await runInAllFrames(pageId, (k) => { if (document.hasFocus()) window.__mcp.pressKey(k); }, [key]);
+    await runInAllFrames(pageId, (k) => {
+      try {
+        if (document.hasFocus()) window.__mcp.pressKey(k);
+        return { __ok: true, v: true };
+      } catch (e) { return { __ok: false, err: String(e && e.message || e) }; }
+    }, [key]);
     return { pressed: key, via: 'synthetic' };
   },
 
   async scroll({ pageId, uid, to, dx, dy, includeSnapshot }) {
     await ensureLib(pageId);
     const fid = uid ? checkUid(pageId, uid) : undefined;
-    await runInPage(pageId, (o) => window.__mcp.scroll(o), [{ uid, to, dx, dy }], fid);
+    await runInPage(pageId, (o) => window.__mcp.tryCall('scroll', o), [{ uid, to, dx, dy }], fid);
     return { scrolled: true, snapshot: await snapshotMaybe(pageId, includeSnapshot) };
   },
 
@@ -151,7 +162,7 @@ export const interactTools = {
     // Coordinate click for surfaces without DOM handles (canvas, maps).
     // Prefer uid-based click whenever possible — coordinates break on scroll/DPR.
     await ensureLib(pageId);
-    const { data } = await runInPage(pageId, (x, y, d) => window.__mcp.clickAt(x, y, d), [x, y, !!dblClick]);
+    const { data } = await runInPage(pageId, (x, y, d) => window.__mcp.tryCall('clickAt', x, y, d), [x, y, !!dblClick]);
     return { clickedAt: { x, y }, hit: data };
   },
 

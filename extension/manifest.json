@@ -16,7 +16,8 @@
     "webNavigation",
     "cookies",
     "downloads",
-    "alarms"
+    "alarms",
+    "offscreen"
   ],
   "host_permissions": ["<all_urls>"],
   "background": {

@@ -21,6 +21,11 @@ export class WSClient {
         else this.send({ type: 'ping' });
       }
     });
+    // WebSocket traffic doesn't count as extension activity — Chrome kills the
+    // SW after ~30s idle even mid-call. A chrome.* API call resets that clock.
+    this._keepAlive = setInterval(() => {
+      try { chrome.runtime.getPlatformInfo(() => {}); } catch {}
+    }, 20000);
     this.connect();
   }
 

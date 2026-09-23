@@ -43,20 +43,45 @@ export async function ensureLib(tabId) {
   });
 }
 
+// chrome.scripting rejects non-JSON-serializable args (undefined, functions).
+// Deep-clean via JSON round-trip: undefined-in-array -> null, undefined
+// object keys dropped — matches what the API would do anyway.
+function cleanArgs(args) {
+  return (args || []).map(a => (a === undefined ? null : (a !== null && typeof a === 'object' ? JSON.parse(JSON.stringify(a)) : a)));
+}
+
+// Injected functions MUST NOT throw: Chrome drops the exception and returns
+// result:null (crbug 1271527 — InjectionResult.error is unimplemented).
+// Page fns return {__ok:true,v} / {__ok:false,err}; unwrap surfaces errors.
+function unwrap(d) {
+  if (d && typeof d === 'object' && d.__ok === true) return d.v;
+  if (d && typeof d === 'object' && d.__ok === false) throw new Error(d.err || 'page-side error');
+  if (d === null || d === undefined) throw new Error('injected function returned nothing (it may have thrown)');
+  return d;
+}
+function unwrapForFrame(d) {
+  if (d && typeof d === 'object' && d.__ok === true) return { result: d.v };
+  if (d && typeof d === 'object' && d.__ok === false) return { error: d.err || 'page-side error' };
+  return { result: d };
+}
+
 // Run `func` in one frame (default: main frame, isolated world).
 export async function runInPage(tabId, func, args = [], frameId) {
   const target = frameId !== undefined ? { tabId, frameIds: [frameId] } : { tabId };
-  const [r] = await chrome.scripting.executeScript({ target, func, args, world: 'ISOLATED' });
+  const [r] = await chrome.scripting.executeScript({ target, func, args: cleanArgs(args), world: 'ISOLATED' });
   if (!r) throw new Error('no result from page');
   if (r.error) throw new Error(String(r.error.message || r.error));
-  return { data: r.result, frameId: r.frameId };
+  return { data: unwrap(r.result), frameId: r.frameId };
 }
 
 // Run `func` in every frame; returns [{frameId, result|error}].
 export async function runInAllFrames(tabId, func, args = []) {
   const res = await chrome.scripting.executeScript({
     target: { tabId, allFrames: true },
-    func, args, world: 'ISOLATED',
+    func, args: cleanArgs(args), world: 'ISOLATED',
   });
-  return res.map(r => ({ frameId: r.frameId, result: r.result, error: r.error ? String(r.error.message || r.error) : undefined }));
+  return res.map(r => {
+    const u = unwrapForFrame(r.result);
+    return { frameId: r.frameId, result: u.result, error: u.error || (r.error ? String(r.error.message || r.error) : undefined) };
+  });
 }

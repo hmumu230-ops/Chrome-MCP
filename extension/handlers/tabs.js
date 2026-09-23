@@ -1,4 +1,5 @@
 // Tab / page management tools — chrome.tabs + chrome.windows APIs.
+import { ensureDebugger, cdp } from './cdp.js';
 
 async function getTab(tabId) {
   try { return await chrome.tabs.get(tabId); }
@@ -48,8 +49,45 @@ export const tabTools = {
         if (!url) throw new Error('url required');
         await chrome.tabs.update(pageId, { url });
         break;
-      case 'back': await chrome.tabs.goBack(pageId); break;
-      case 'forward': await chrome.tabs.goForward(pageId); break;
+      case 'back':
+      case 'forward': {
+        // chrome.tabs.goBack/goForward is unreliable for extension-initiated
+        // navigations ("Cannot find a next page in history"). Drive the page's
+        // own session history first; restricted pages fall back to CDP's
+        // navigation-history list (what DevTools' back button uses).
+        try {
+          const [r] = await chrome.scripting.executeScript({
+            target: { tabId: pageId },
+            func: (d) => {
+              try {
+                // navigation.canGoBack only sees the same-origin contiguous run —
+                // cross-origin entries (e.g. after a link click) live outside it.
+                const nav = window.navigation;
+                if (nav && 'canGoBack' in nav) {
+                  const ok = d === 'back' ? nav.canGoBack : nav.canGoForward;
+                  if (!ok) return { __ok: true, v: { moved: 'maybe-cdp' } };
+                }
+                history[d]();
+                return { __ok: true, v: { moved: true } };
+              } catch (e) { return { __ok: false, err: String(e && e.message || e) }; }
+            },
+            args: [type],
+          });
+          const res = r && r.result;
+          if (res && res.__ok === false) throw new Error(res.err || 'page-side error');
+          if (!res) throw new Error('no result from page');
+          if (res.v && res.v.moved === true) break;   // same-origin move done
+          // moved==='maybe-cdp': cross-origin history may still exist → CDP.
+        } catch (e) {
+          if (!/no result from page/.test(String(e && e.message))) { /* fall through to CDP */ }
+        }
+        await ensureDebugger(pageId, ['Page']);
+        const { entries, currentIndex } = await cdp(pageId, 'Page.getNavigationHistory');
+        const target = entries[currentIndex + (type === 'back' ? -1 : 1)];
+        if (!target) throw new Error('no ' + type + ' page in history');
+        await cdp(pageId, 'Page.navigateToHistoryEntry', { entryId: target.id });
+        break;
+      }
       case 'reload': await chrome.tabs.reload(pageId, { bypassCache: !!ignoreCache }); break;
       default: throw new Error('unknown navigation type: ' + type);
     }

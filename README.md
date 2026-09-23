@@ -1,8 +1,8 @@
-# Chrome MCP
+﻿# Chrome MCP
 
 把当前这个 Chrome 暴露为通用 MCP server —— 任何支持 MCP 的客户端（Devin、Claude Code、Cursor、ChatGPT、自研 agent…）都连同一个端点，浏览器插件只装一次。
 
-> **English:** Chrome MCP turns your everyday Chrome into a universal [MCP](https://modelcontextprotocol.io) server. A small MV3 extension plus a local Node bridge expose `http://127.0.0.1:7890/mcp` — one Streamable HTTP endpoint that any MCP client can connect to, operating your real tabs, cookies and login sessions. 38 tools: DOM snapshots with element uids, clicking/filling/typing, screenshots, network & console capture, cookies, downloads, PDF export, CDP-powered emulation and performance traces — across iframes, with stale-uid detection and debugger lifecycle management. Docs below are in Chinese; the tool surface and protocol are standard MCP.
+> **English:** Chrome MCP turns your everyday Chrome into a universal [MCP](https://modelcontextprotocol.io) server. A small MV3 extension plus a local Node bridge expose `http://127.0.0.1:7890/mcp` — one Streamable HTTP endpoint that any MCP client can connect to, operating your real tabs, cookies and login sessions. 37 tools: DOM snapshots with element uids, clicking/filling/typing, screenshots, network & console capture, cookies, downloads, PDF export, CDP-powered emulation and performance traces — across iframes, with stale-uid detection and debugger lifecycle management. Docs below are in Chinese; the tool surface and protocol are standard MCP.
 
 ## 架构
 
@@ -50,13 +50,13 @@ start-bridge.bat        :: 或 bridge\ 下 npm start
 | Devin | `mcp_config.json` → `"browser": { "url": "http://127.0.0.1:7890/mcp" }` |
 | Cursor / Windsurf / 其他 | mcp 配置 → `{"url": "http://127.0.0.1:7890/mcp"}` |
 
-## 工具集（38 个）
+## 工具集（37 个）
 
 - **页面**：list_pages, new_page, close_page, select_page, navigate_page, resize_page
 - **查看**：take_snapshot（uid 来源，覆盖 iframe）, take_screenshot, evaluate_script, extract_text, wait_for（text / textGone / time，跨 frame）
 - **交互**：click（调试器已附着+前台 tab 时自动走 CDP 可信输入）, click_xy, hover, drag, scroll, fill, fill_form, type_text, press_key, upload_file, handle_dialog
 - **会话/数据**：get_cookies, set_cookie, remove_cookie, list_downloads, download_file, http_request（带 cookie、免 CORS、支持二进制落盘）, save_pdf
-- **调试**：list/get_network_request(s), list/get_console_message(s), emulate, performance_start/stop_trace, take_heapsnapshot, detach_debugger
+- **调试**：list/get_network_request(s), list/get_console_message(s), emulate, performance_start/stop_trace, detach_debugger
 
 工具带 MCP annotations（readOnlyHint / destructiveHint / idempotentHint / openWorldHint），结果同时返回 text + structuredContent。
 变更类操作后自动等页面 settle（轮询 load 状态 + 静默窗口）；页面挂着 JS 弹窗时结果里会带 `modalDialogs` 提醒。

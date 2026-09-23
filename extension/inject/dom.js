@@ -128,16 +128,35 @@
     find,
     snapshot,
 
+    // Chrome's executeScript silently returns result:null when the injected
+    // function throws (crbug 1271527 — no error propagation). Every call site
+    // therefore wraps work in tryCall so errors survive the trip back.
+    tryCall(name, ...a) {
+      try { return { __ok: true, v: this[name](...a) }; }
+      catch (e) { return { __ok: false, err: String(e && e.message || e) }; }
+    },
+
+    box(u) {
+      const el = find(u);
+      if (!el) throw new Error('element not found: ' + u);
+      el.scrollIntoView({ block: 'center', inline: 'center' });
+      const r = el.getBoundingClientRect();
+      return { x: r.x, y: r.y, width: r.width, height: r.height, cx: r.x + r.width / 2, cy: r.y + r.height / 2 };
+    },
+
     click(u, dbl) {
       const el = find(u);
       if (!el) throw new Error('element not found: ' + u);
       el.scrollIntoView({ block: 'center', inline: 'center' });
       firePointer(el, 'pointerover'); fireMouse(el, 'mouseover');
-      const seq = dbl ? 2 : 1;
-      for (let i = 0; i < seq; i++) {
-        firePointer(el, 'pointerdown'); fireMouse(el, 'mousedown');
-        firePointer(el, 'pointerup'); fireMouse(el, 'mouseup');
-        fireMouse(el, 'click', { detail: i + 1 });
+      firePointer(el, 'pointerdown'); fireMouse(el, 'mousedown');
+      firePointer(el, 'pointerup'); fireMouse(el, 'mouseup');
+      // el.click() dispatches ONE click and runs the default action (link
+      // navigation, form submit) — synthetic MouseEvents never navigate.
+      el.click();
+      if (dbl) {
+        el.click();
+        el.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, view: window, detail: 2 }));
       }
       return true;
     },

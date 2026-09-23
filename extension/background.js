@@ -38,6 +38,23 @@ async function dispatch(msg) {
 const ws = new WSClient(BRIDGE_WS, dispatch);
 ws.start();
 
+// Keep the SW alive: an offscreen document holds a long-lived runtime port.
+// An open port counts as continuous activity — unlike WebSocket traffic or
+// outbound API calls, which don't reliably reset Chrome's ~30s idle kill.
+(async () => {
+  try {
+    const existing = await chrome.offscreen.hasDocument();
+    if (!existing) {
+      await chrome.offscreen.createDocument({
+        url: 'offscreen.html',
+        reasons: ['BLOBS'],
+        justification: 'Holds a runtime port that keeps the service worker alive between MCP calls.',
+      });
+    }
+  } catch {}
+})();
+chrome.runtime.onConnect.addListener(() => {});
+
 // Popup queries status through this.
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg && msg.type === 'status') sendResponse(ws.status());

@@ -16,12 +16,11 @@ const MAX_CONSOLE = 2000;
 function newSession() {
   return {
     domains: new Set(),
-    net: [], netById: new Map(), reqSeq: 0,
+    net: [], netById: new Map(), reqSeq: 0, currentLoader: null,
     console: [], msgSeq: 0,
     dialogQueue: [],
     pendingDialogAction: undefined,
     tracing: null,
-    heapChunks: null,
   };
 }
 
@@ -39,10 +38,16 @@ export function setPendingDialogAction(tabId, action) {
   if (s) s.pendingDialogAction = action;
 }
 
-export async function cdp(tabId, method, params = {}) {
+export async function cdp(tabId, method, params = {}, timeoutMs = 30000) {
   const s = sessions.get(tabId);
   if (s) touch(s, tabId);
-  return await chrome.debugger.sendCommand({ tabId }, method, params);
+  // chrome.debugger.sendCommand can hang forever on some commands (e.g.
+  // Page.captureScreenshot with captureBeyondViewport on some builds) —
+  // race it with a timeout so the tool fails instead of wedging the call.
+  return await Promise.race([
+    chrome.debugger.sendCommand({ tabId }, method, params),
+    new Promise((_, rej) => setTimeout(() => rej(new Error(`CDP timeout: ${method}`)), timeoutMs)),
+  ]);
 }
 
 function touch(s, tabId) {
@@ -121,12 +126,15 @@ function pushCapped(arr, item, cap) {
 function routeEvent(tabId, s, method, p) {
   switch (method) {
     case 'Page.frameNavigated':
-      if (!p.frame.parentId) { s.net = []; s.netById.clear(); s.console = []; }
+      // Don't clear net on navigation: requestWillBeSent can arrive BEFORE
+      // frameNavigated for the new document. Tag requests with loaderId and
+      // filter at read time instead. Console has no loaderId — clear it.
+      if (!p.frame.parentId) { s.currentLoader = p.frame.loaderId; s.console = []; }
       break;
 
     case 'Network.requestWillBeSent': {
       const e = {
-        reqid: ++s.reqSeq, requestId: p.requestId,
+        reqid: ++s.reqSeq, requestId: p.requestId, loaderId: p.loaderId,
         url: p.request.url, method: p.request.method, type: p.type || 'other',
         requestHeaders: p.request.headers, postData: p.request.postData,
         timestamp: p.timestamp, wallTime: p.wallTime,
@@ -201,15 +209,12 @@ function routeEvent(tabId, s, method, p) {
       if (s.tracing) { const t = s.tracing; s.tracing = null; t.resolve(t.chunks); }
       break;
 
-    case 'HeapProfiler.addHeapSnapshotChunk':
-      if (s.heapChunks) s.heapChunks.push(p.chunk);
-      break;
   }
 }
 
 chrome.debugger.onEvent.addListener((source, method, params) => {
   const s = sessions.get(source.tabId);
-  if (s) routeEvent(source.tabId, method, params || {});
+  if (s) routeEvent(source.tabId, s, method, params || {});
 });
 
 // ---------- tools ----------
@@ -225,7 +230,7 @@ const NET_PRESETS = {
 export const cdpTools = {
   async list_network_requests({ pageId, pageSize, pageIdx, resourceTypes }) {
     const s = await ensureDebugger(pageId, ['Network']);
-    let list = s.net;
+    let list = s.currentLoader ? s.net.filter(r => r.loaderId === s.currentLoader) : s.net;
     if (resourceTypes && resourceTypes.length) list = list.filter(r => resourceTypes.includes(r.type));
     const start = (pageIdx || 0) * (pageSize || list.length);
     const items = list.slice(start, pageSize ? start + pageSize : undefined);
@@ -234,9 +239,10 @@ export const cdpTools = {
 
   async get_network_request({ pageId, reqid, requestFilePath, responseFilePath }) {
     const s = await ensureDebugger(pageId, ['Network']);
+    const list = s.currentLoader ? s.net.filter(r => r.loaderId === s.currentLoader) : s.net;
     let e;
-    if (reqid === undefined) e = s.net[s.net.length - 1];
-    else e = s.net.find(r => r.reqid === reqid);
+    if (reqid === undefined) e = list[list.length - 1];
+    else e = list.find(r => r.reqid === reqid);
     if (!e) throw new Error(reqid === undefined ? 'no network requests recorded' : 'no such request: ' + reqid);
     let body;
     try {
@@ -314,6 +320,11 @@ export const cdpTools = {
       applied.colorScheme = colorScheme;
     }
     if (viewport !== undefined) {
+      if (!viewport) {
+        await cdp(pageId, 'Emulation.clearDeviceMetricsOverride');
+        await cdp(pageId, 'Emulation.setTouchEmulationEnabled', { enabled: false }).catch(() => {});
+        applied.viewport = 'cleared';
+      } else {
       const m = viewport.match(/^(\d+)x(\d+)x([\d.]+)((?:,mobile|,touch|,landscape)*)$/);
       if (!m) throw new Error('bad viewport format: ' + viewport);
       const flags = m[4];
@@ -326,6 +337,7 @@ export const cdpTools = {
       });
       if (flags.includes('touch')) await cdp(pageId, 'Emulation.setTouchEmulationEnabled', { enabled: true });
       applied.viewport = viewport;
+      }
     }
     if (extraHttpHeaders !== undefined) {
       await cdp(pageId, 'Network.setExtraHTTPHeaders', { headers: extraHttpHeaders ? JSON.parse(extraHttpHeaders) : {} });
@@ -366,14 +378,9 @@ export const cdpTools = {
     };
   },
 
-  async take_heapsnapshot({ pageId, filePath }) {
-    const s = await ensureDebugger(pageId, ['HeapProfiler']);
-    s.heapChunks = [];
-    await cdp(pageId, 'HeapProfiler.takeHeapSnapshot', { reportProgress: false });
-    const data = s.heapChunks.join('');
-    s.heapChunks = null;
-    return { file: filePath ? { path: filePath, content: data } : undefined, bytes: data.length };
-  },
+  // NOTE: take_heapsnapshot was removed — chrome.debugger does not expose the
+  // HeapProfiler domain ("method wasn't found" -32601). Heap capture would need
+  // a real CDP pipe (--remote-debugging-port), not the extension debugger.
 
   async save_pdf({ pageId, filePath, landscape, scale, printBackground }) {
     await ensureDebugger(pageId, ['Page']);

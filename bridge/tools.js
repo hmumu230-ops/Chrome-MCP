@@ -193,11 +193,6 @@ export const TOOLS = [
     inputSchema: withProps({ filePath }),
   },
   {
-    name: 'take_heapsnapshot',
-    description: 'Capture a JS heap snapshot (.heapsnapshot).',
-    inputSchema: withProps({ filePath }, ['filePath']),
-  },
-  {
     name: 'detach_debugger',
     description: 'Detach the CDP debugger from a tab (removes the debugging banner; clears collectors).',
     inputSchema: withProps({}),
