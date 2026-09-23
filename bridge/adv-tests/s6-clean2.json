@@ -1,0 +1,6 @@
+[
+  {"label": "rm a b", "tool": "remove_cookie", "args": {"pageId": 301371102, "name": "a b"}},
+  {"label": "rm unicode", "tool": "remove_cookie", "args": {"pageId": 301371102, "name": "adv12中"}},
+  {"label": "verify", "tool": "get_cookies", "args": {"pageId": 301371102}},
+  {"label": "close", "tool": "close_page", "args": {"pageId": 301371102}}
+]

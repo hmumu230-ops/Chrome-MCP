@@ -1,0 +1,54 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>adv05-forms</title>
+<style>body{font-family:monospace}label{display:block;margin:4px 0}input,select,textarea{font-size:14px}</style>
+</head><body>
+<h3>inputs</h3>
+<label>text <input id="t-text" type="text"></label>
+<label>password <input id="t-pass" type="password"></label>
+<label>number <input id="t-num" type="number"></label>
+<label>email <input id="t-email" type="email"></label>
+<label>tel <input id="t-tel" type="tel"></label>
+<label>date <input id="t-date" type="date"></label>
+<label>color <input id="t-color" type="color"></label>
+<label>textarea <textarea id="ta" rows="2" cols="30"></textarea></label>
+<label>contenteditable <div id="ce" contenteditable="true" style="border:1px solid #888;min-height:20px;width:200px;display:inline-block"></div></label>
+<label>maxlength5 <input id="t-max" type="text" maxlength="5"></label>
+<label>pattern[0-9] <input id="t-pat" type="text" pattern="[0-9]*"></label>
+<label>readonly <input id="t-ro" type="text" readonly value="RO-INIT"></label>
+<label>disabled <input id="t-dis" type="text" disabled value="DIS-INIT"></label>
+<h3>selects</h3>
+<select id="sel1"><option value="a">opt-a</option><option value="b">opt-b</option><option value="c">opt-c</option></select>
+<select id="selm" multiple size="4"><option value="1">m-one</option><option value="2">m-two</option><option value="3">m-three</option><option value="4">m-four</option></select>
+<select id="selg"><optgroup label="grp1"><option value="x">g1-x</option></optgroup><optgroup label="grp2"><option value="y">g2-y</option><option value="z">g2-z</option></optgroup></select>
+<h3>check/radio</h3>
+<label><input id="cb" type="checkbox"> checkme</label>
+<label><input id="r1" type="radio" name="rg" value="r1v"> radio1</label>
+<label><input id="r2" type="radio" name="rg" value="r2v"> radio2</label>
+<h3>key/event log</h3>
+<input id="kinput" type="text" placeholder="type here">
+<div id="keylog" style="white-space:pre;font-size:10px"></div>
+<h3>hover</h3>
+<div id="hov" tabindex="0" style="width:150px;height:40px;background:#ccc">HOVER-ME</div>
+<h3>upload</h3>
+<input id="f1" type="file">
+<input id="f2" type="file" multiple>
+<div id="uplog" style="font-size:10px"></div>
+<script>
+window.keylog=[];
+['keydown','keypress','keyup','input','change'].forEach(t=>{
+  document.getElementById('kinput').addEventListener(t,e=>{
+    window.keylog.push({t,k:e.key,c:e.code,kc:e.keyCode,ctrl:e.ctrlKey,shift:e.shiftKey,alt:e.altKey,v:e.target.value});
+  });
+});
+window.hovers=[];window.dbls=[];
+const hov=document.getElementById('hov');
+hov.addEventListener('mouseover',e=>window.hovers.push('over'));
+hov.addEventListener('mouseenter',e=>window.hovers.push('enter'));
+hov.addEventListener('mousemove',e=>window.hovers.push('move'));document.addEventListener('dblclick',e=>window.dbls.push(e.target.id));
+window.uploads=[];
+document.getElementById('f1').addEventListener('change',e=>{window.uploads.push({id:'f1',files:[...e.target.files].map(f=>({n:f.name,s:f.size}))});});
+document.getElementById('f2').addEventListener('change',e=>{window.uploads.push({id:'f2',files:[...e.target.files].map(f=>({n:f.name,s:f.size}))});});
+window.formClicks=[];
+document.addEventListener('click',e=>{const p=(e.composedPath&&e.composedPath()[0])||e.target;window.formClicks.push({id:p.id||p.tagName,x:e.clientX,y:e.clientY});},true);
+</script>
+</body></html>

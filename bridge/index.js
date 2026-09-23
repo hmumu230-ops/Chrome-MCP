@@ -67,6 +67,11 @@ function wsAllowed(req) {
   // Browsers always send Origin on WS upgrade; the MV3 service worker sends
   // chrome-extension://<id>. Anything else with an Origin header is a webpage
   // trying to hijack the channel.
+  // When MCP_EXT_TOKEN is configured it gates EVERY client — the extension
+  // included (it reads the token from extension/.bridge-token, which the
+  // bridge writes at startup). Otherwise a local process could just forge
+  // the pinned chrome-extension:// Origin and bypass the token entirely.
+  if (process.env.MCP_EXT_TOKEN && url.searchParams.get('token') !== process.env.MCP_EXT_TOKEN) return false;
   if (origin) {
     if (!origin.startsWith('chrome-extension://')) return false;
     if (pinnedExtOrigin && origin !== pinnedExtOrigin) return false;
@@ -77,15 +82,23 @@ function wsAllowed(req) {
     }
     return true;
   }
-  // Non-browser WS clients (tests, other tools): allowed, but require token
-  // when MCP_EXT_TOKEN is configured.
-  if (process.env.MCP_EXT_TOKEN) return url.searchParams.get('token') === process.env.MCP_EXT_TOKEN;
   return true;
 }
 
 // ---------- extension channel ----------
 
+// Provision the extension's WS token when MCP_EXT_TOKEN is configured: the
+// extension fetches its own packaged file .bridge-token and appends it to the
+// /ws query. (A same-user local process can still read this file — the token
+// gates other accounts/services, not a fully same-user attacker.)
+if (process.env.MCP_EXT_TOKEN) {
+  try {
+    fs.writeFileSync(path.join(__dirname, '..', 'extension', '.bridge-token'), process.env.MCP_EXT_TOKEN);
+  } catch (e) { console.log('[bridge] WARNING: could not write extension/.bridge-token:', e.message); }
+}
+
 let extSocket = null;
+let extSocketIsExtension = false;
 let seq = 0;
 const pending = new Map();
 const MAX_PENDING = 256;
@@ -129,7 +142,9 @@ async function callExtension(tool, args) {
       pending.delete(id);
       reject(new Error(`extension call timeout (${tool})`));
     }, CALL_TIMEOUT_MS);
-    pending.set(id, { resolve, reject, timer });
+    // Track which socket carries the call — when a socket dies we must only
+    // flush calls that were actually sent on it, not its replacement's work.
+    pending.set(id, { resolve, reject, timer, sock: extSocket });
     extSocket.send(JSON.stringify({ type: 'call', id, tool, args }));
   });
 }
@@ -142,23 +157,38 @@ wss.on('connection', (ws, req) => {
   // security boundary — localhost processes are trusted (same model as a
   // Docker socket or --remote-debugging-port). Set MCP_EXT_TOKEN to also
   // gate them if the machine is multi-user/hostile.
-  if (!origin.startsWith('chrome-extension://')) {
+  const isExtension = origin.startsWith('chrome-extension://');
+  if (!isExtension) {
     console.log('[bridge] WARNING: non-extension client on /ws (origin=' + (origin || 'none') + ') — trusted-localhost model');
   }
-  // Single-slot, last-wins: a fresh connection replaces a stale one. This
-  // heals reconnects where the old socket hasn't noticed the peer died yet.
+  // Single slot. A LIVE holder wins — two browsers can carry the same
+  // extension id (unpacked, same key), and last-wins there becomes a
+  // ~300ms connect/disconnect flap storm (observed live, incl. bridge
+  // crashes). Only displace a holder that stopped talking (dead TCP the
+  // close event hasn't caught yet) — a healthy holder rejects the newcomer.
   if (extSocket && extSocket !== ws) {
-    try { extSocket.terminate(); } catch {}
+    const quiet = Date.now() - (extSocket._lastSeen || 0);
+    if (extSocket.readyState === 1 && quiet < 90000) {
+      try { ws.close(4000, 'extension slot held'); } catch { try { ws.destroy(); } catch {} }
+      console.log('[bridge] rejected extra /ws client — slot held by live connection');
+      return;
+    }
+    const stale = extSocket;
+    try { stale.close(); } catch {}
+    setTimeout(() => { try { stale.terminate(); } catch {} }, 1000).unref();
   }
   extSocket = ws;
+  extSocketIsExtension = isExtension;
+  extSocket._lastSeen = Date.now();
   console.log('[bridge] extension connected');
   ws.on('message', (raw) => {
+    ws._lastSeen = Date.now();
     let msg;
     try { msg = JSON.parse(raw.toString()); } catch { return; }
     if (!msg || typeof msg !== 'object') return;
     if (msg.type === 'result') {
       const p = pending.get(msg.id);
-      if (!p) return;
+      if (!p || p.sock !== ws) return; // only the socket that carried the call may answer it
       pending.delete(msg.id);
       clearTimeout(p.timer);
       msg.ok ? p.resolve(msg.data) : p.reject(new Error(msg.error || 'extension error'));
@@ -169,11 +199,16 @@ wss.on('connection', (ws, req) => {
     }
   });
   ws.on('close', () => {
-    // Only the live socket's death drops calls — a terminated stale socket
-    // must not flush pending calls that belong to its replacement.
-    if (extSocket !== ws) return;
-    extSocket = null;
-    for (const [id, p] of pending) { clearTimeout(p.timer); p.reject(new Error('extension disconnected')); pending.delete(id); }
+    if (extSocket === ws) extSocket = null;
+    // Reject only calls that were sent on THIS socket — calls on the
+    // replacement socket stay alive, calls on the dead one fail fast instead
+    // of hanging the full call timeout.
+    for (const [id, p] of pending) {
+      if (p.sock !== ws) continue;
+      clearTimeout(p.timer);
+      p.reject(new Error('extension disconnected'));
+      pending.delete(id);
+    }
     console.log('[bridge] extension disconnected');
   });
   ws.on('error', () => {});
@@ -181,20 +216,63 @@ wss.on('connection', (ws, req) => {
 
 // ---------- result formatting ----------
 
-// Writing INTO this repo is allowed for new files, but never overwrite
-// existing project files — a forged/buggy filePath must not be able to
-// rewrite bridge source, extension code, or configs (self-persistence).
+// filePath targets are denied outright under these roots. Denylisting the
+// repo by "existing file" checks was proven bypassable (case variants,
+// \\?\ verbatim prefixes, junctions, hardlinks, .git hooks, Startup .bat).
 const PROJECT_ROOT = path.resolve(__dirname, '..');
-const WIN_RESERVED = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i;
+const WIN_RESERVED = /^(con|prn|aux|nul|conin\$|conout\$|com\d|lpt\d)(\..*)?$/i;
+const DENY_ROOTS = [
+  PROJECT_ROOT,
+  process.env.SystemRoot || 'C:\\Windows',
+  path.join(process.env.APPDATA || '', 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup'),
+  path.join(process.env.ProgramData || '', 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup'),
+].filter(Boolean).map(r => path.resolve(r).toLowerCase());
+
+// Canonicalize before comparing: NTFS is case-insensitive, and junctions /
+// verbatim prefixes defeat naive string prefixes. Resolve the deepest
+// existing ancestor so the check lands on the real on-disk location.
+function canonPath(target) {
+  let cur = target;
+  const rest = [];
+  while (true) {
+    try { cur = fs.realpathSync(cur); break; }
+    catch {
+      const parent = path.dirname(cur);
+      if (parent === cur) break;
+      rest.unshift(path.basename(cur));
+      cur = parent;
+    }
+  }
+  return path.resolve(path.join(cur, ...rest)).toLowerCase();
+}
 
 function writeOut(file, content) {
-  const target = path.resolve(file.path);
-  const base = path.basename(target);
-  if (WIN_RESERVED.test(base) || base !== base.trim() || /[.:]$/.test(base) || base.includes(':')) {
-    throw new Error('unsafe filename: ' + base);
+  const raw = String(file.path);
+  // Verbatim/UNC prefixes: path.resolve preserves \\?\ and \\.\, which would
+  // bypass every string check below. UNC shares are denied too.
+  if (/^\\\\[.?]\\/.test(raw) || raw.startsWith('\\\\')) {
+    throw new Error('unsafe file path prefix: ' + raw);
   }
-  if (target.startsWith(PROJECT_ROOT + path.sep) && fs.existsSync(target)) {
-    throw new Error('refusing to overwrite project file: ' + target);
+  const target = path.resolve(raw);
+  // No ADS/stream syntax, no trailing dot/space, on any segment.
+  for (const seg of target.split(path.sep).slice(1)) {
+    if (!seg || seg !== seg.trim() || /[.:]$/.test(seg) || seg.includes(':')) {
+      throw new Error('unsafe path segment: ' + seg);
+    }
+  }
+  const base = path.basename(target);
+  if (WIN_RESERVED.test(base)) throw new Error('unsafe filename: ' + base);
+
+  const canon = canonPath(target);
+  if (DENY_ROOTS.some(r => canon === r || canon.startsWith(r + path.sep))) {
+    throw new Error('refusing to write under protected directory: ' + target);
+  }
+  // Writing through a hardlink rewrites every linked name — refuse it.
+  try {
+    const st = fs.statSync(target);
+    if (st.nlink > 1) throw new Error('refusing to write through hardlink: ' + target);
+  } catch (e) {
+    if (e.code !== 'ENOENT') throw e;
   }
   const dir = path.dirname(target);
   fs.mkdirSync(dir, { recursive: true });
@@ -203,16 +281,23 @@ function writeOut(file, content) {
 
 function formatResult(data) {
   if (data && data.image) {
-    return { content: [{ type: 'image', data: data.image.base64, mimeType: data.image.mimeType || 'image/png' }] };
+    // Keep sibling fields (truncated/note) — previously dropped silently.
+    const { image, ...rest } = data;
+    const out = { content: [{ type: 'image', data: image.base64, mimeType: image.mimeType || 'image/png' }] };
+    if (Object.keys(rest).length) {
+      out.content.push({ type: 'text', text: JSON.stringify(rest) });
+      out.structuredContent = rest;
+    }
+    return out;
   }
   const notes = [];
   let rest = data;
   if (data && typeof data === 'object' && !Array.isArray(data)) {
-    const { file, requestFile, image, ...r } = data;
+    const { file, requestFile, image, saved, ...r } = data;
     rest = r;
     for (const f of [file, requestFile]) {
       if (f && f.path) {
-        try { writeOut(f, f.content); notes.push(`saved: ${f.path}`); }
+        try { writeOut(f, f.content); notes.push(`saved: ${f.path}`); r.saved = f.path; }
         catch (e) { notes.push(`failed to write ${f.path}: ${e.message}`); }
       }
     }
@@ -234,7 +319,8 @@ const ANNOTATIONS = {
   get_network_request: { readOnlyHint: true },
   list_console_messages: { readOnlyHint: true },
   get_console_message: { readOnlyHint: true },
-  get_cookies: { readOnlyHint: true },
+  // get_cookies intentionally NOT marked readOnly — it returns session tokens
+  // with values; clients should surface it as sensitive, not auto-approvable.
   list_downloads: { readOnlyHint: true },
   extract_text: { readOnlyHint: true },
 
@@ -328,7 +414,7 @@ const httpServer = http.createServer(async (req, res) => {
     res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({
       name: 'chrome-mcp-bridge',
       mcpEndpoint: `http://${HOST}:${PORT}/mcp`,
-      extensionConnected: !!(extSocket && extSocket.readyState === 1),
+      extensionConnected: !!(extSocket && extSocket.readyState === 1 && extSocketIsExtension),
       sessions: transports.size,
     }));
     return;

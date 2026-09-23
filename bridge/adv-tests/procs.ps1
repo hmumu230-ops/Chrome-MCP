@@ -1,0 +1,1 @@
+Get-CimInstance Win32_Process | Where-Object { $_.Name -match 'node|python|powershell|cmd|wscript|conhost' } | ForEach-Object { "{0} {1} :: {2}" -f $_.ProcessId, $_.Name, ($_.CommandLine -replace '\s+', ' ') }

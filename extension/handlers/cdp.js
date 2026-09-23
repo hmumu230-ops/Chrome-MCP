@@ -38,6 +38,13 @@ export function setPendingDialogAction(tabId, action) {
   if (s) s.pendingDialogAction = action;
 }
 
+// Script-injecting tools use this to fail fast instead of hanging the call:
+// chrome.scripting.executeScript queues behind a modal JS dialog.
+export function hasOpenDialog(tabId) {
+  const s = sessions.get(tabId);
+  return !!(s && s.dialogQueue.length);
+}
+
 export async function cdp(tabId, method, params = {}, timeoutMs = 30000) {
   const s = sessions.get(tabId);
   if (s) touch(s, tabId);
@@ -85,7 +92,12 @@ async function _ensureDebugger(tabId, domains) {
   if (!s) {
     if (banned.has(tabId)) throw new Error('debugger was cancelled by the user on this tab — call attach explicitly or reload the tab');
     try {
-      await chrome.debugger.attach({ tabId }, '1.3');
+      // attach can hang under load; a hung promise would wedge this tab's
+      // attach-lock chain forever.
+      await Promise.race([
+        chrome.debugger.attach({ tabId }, '1.3'),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('debugger attach timeout')), 15000)),
+      ]);
     } catch (e) {
       if (/already attached/i.test(String(e && e.message || e))) {
         await sweepAndAttach(tabId);
@@ -95,17 +107,24 @@ async function _ensureDebugger(tabId, domains) {
     }
     s = newSession();
     sessions.set(tabId, s);
-    // Page events power navigation-reset + dialog handling.
-    await cdp(tabId, 'Page.enable').catch(() => {});
-    s.domains.add('Page');
+    // Page events power navigation-reset + dialog handling. Short timeout:
+    // a JS dialog already open parks the renderer — Page.enable stalls ~30s
+    // otherwise, and we only mark the domain after it actually answers.
+    if (await enableDomain(tabId, 'Page')) s.domains.add('Page');
   }
   for (const d of domains) {
     if (NO_ENABLE.has(d) || s.domains.has(d)) continue;
-    await cdp(tabId, d + '.enable').catch(() => {});
-    s.domains.add(d);
+    if (await enableDomain(tabId, d)) s.domains.add(d);
   }
   touch(s, tabId);
   return s;
+}
+
+// Domain enables use a short timeout: an already-open JS dialog parks the
+// renderer, and the default 30s cdp timeout would stall every attach.
+async function enableDomain(tabId, d) {
+  try { await cdp(tabId, d + '.enable', {}, 4000); return true; }
+  catch { return false; } // retried on the next ensureDebugger call
 }
 
 export function clearBanned(tabId) { banned.delete(tabId); }
@@ -114,8 +133,10 @@ export async function detachDebugger(tabId) {
   const s = sessions.get(tabId);
   if (!s) return false;
   // Reject pending work before deleting the session — otherwise an in-flight
-  // trace stop hangs until the 60s flush timeout.
-  if (s.tracing) { const t = s.tracing; s.tracing = null; t.reject(new Error('debugger detached')); }
+  // trace stop hangs until the 60s flush timeout. reject may be null when a
+  // trace was started but never stopped — guard or the TypeError aborts the
+  // whole detach and wedges the session.
+  if (s.tracing) { const t = s.tracing; s.tracing = null; if (typeof t.reject === 'function') t.reject(new Error('debugger detached')); }
   try { await chrome.debugger.detach({ tabId }); } catch {}
   sessions.delete(tabId);
   return true;
@@ -123,7 +144,7 @@ export async function detachDebugger(tabId) {
 
 chrome.debugger.onDetach.addListener(({ tabId }, reason) => {
   const s = sessions.get(tabId);
-  if (s && s.tracing) s.tracing.reject(new Error('debugger detached'));
+  if (s && s.tracing) { const t = s.tracing; s.tracing = null; if (typeof t.reject === 'function') t.reject(new Error('debugger detached')); }
   sessions.delete(tabId);
   // User clicked "Cancel" on the infobar — respect that, don't reattach silently.
   if (reason === 'canceled_by_user') banned.add(tabId);
@@ -144,7 +165,9 @@ function routeEvent(tabId, s, method, p) {
       // Don't clear net on navigation: requestWillBeSent can arrive BEFORE
       // frameNavigated for the new document. Tag requests with loaderId and
       // filter at read time instead. Console has no loaderId — clear it.
-      if (!p.frame.parentId) { s.currentLoader = p.frame.loaderId; s.console = []; }
+      // Dialogs dismissed by navigation never emit a close event — drop the
+      // queue too or stale entries lie to the next handle_dialog.
+      if (!p.frame.parentId) { s.currentLoader = p.frame.loaderId; s.console = []; s.dialogQueue = []; }
       break;
 
     case 'Network.requestWillBeSent': {
@@ -166,8 +189,24 @@ function routeEvent(tabId, s, method, p) {
         requestHeaders: p.request.headers, postData: p.request.postData,
         timestamp: p.timestamp, wallTime: p.wallTime,
       };
+      // CORS preflights carry a different loaderId than the page — tag them
+      // so the loader filter can keep them visible instead of vanishing.
+      if (e.method === 'OPTIONS' && e.loaderId !== s.currentLoader) e.preflight = true;
       s.netById.set(p.requestId, e);
       pushCapped(s.net, e, MAX_NET);
+      break;
+    }
+    case 'Network.requestWillBeSentExtraInfo': {
+      // requestWillBeSent.headers is a REDUCED set — the full wire headers
+      // (Cookie, Accept, sec-fetch-*, Host…) only arrive via ExtraInfo.
+      const e = s.netById.get(p.requestId);
+      if (e && p.headers) e.requestHeaders = { ...e.requestHeaders, ...p.headers };
+      break;
+    }
+    case 'Network.responseReceivedExtraInfo': {
+      const e = s.netById.get(p.requestId);
+      if (e && p.headers) e.responseHeaders = { ...e.responseHeaders, ...p.headers };
+      if (e && p.statusCode && e.status === undefined) e.status = p.statusCode;
       break;
     }
     case 'Network.webSocketCreated': {
@@ -180,6 +219,30 @@ function routeEvent(tabId, s, method, p) {
       pushCapped(s.net, e, MAX_NET);
       break;
     }
+    case 'Network.webSocketHandshakeResponseReceived': {
+      const e = s.netById.get(p.requestId);
+      if (e) { e.status = p.response.status; e.responseHeaders = p.response.headers; }
+      break;
+    }
+    case 'Network.webSocketFrameSent':
+    case 'Network.webSocketFrameReceived': {
+      const e = s.netById.get(p.requestId);
+      if (e) {
+        if (!e.frames) e.frames = [];
+        pushCapped(e.frames, {
+          dir: method === 'Network.webSocketFrameSent' ? 'sent' : 'recv',
+          opcode: p.response && p.response.opcode, mask: p.response && p.response.mask,
+          data: (p.response && p.response.payloadData || '').slice(0, 500),
+          timestamp: p.timestamp,
+        }, 200);
+      }
+      break;
+    }
+    case 'Network.webSocketFrameError': {
+      const e = s.netById.get(p.requestId);
+      if (e) e.frameError = p.errorMessage;
+      break;
+    }
     case 'Network.webSocketClosed': {
       const e = s.netById.get(p.requestId);
       if (e) e.closed = true;
@@ -187,17 +250,31 @@ function routeEvent(tabId, s, method, p) {
     }
     case 'Network.responseReceived': {
       const e = s.netById.get(p.requestId);
-      if (e) { e.status = p.response.status; e.responseHeaders = p.response.headers; e.mimeType = p.response.mimeType; }
+      if (e) {
+        e.status = p.response.status; e.responseHeaders = p.response.headers; e.mimeType = p.response.mimeType;
+        e.protocol = p.response.protocol;
+        if (p.response.fromDiskCache) e.fromDiskCache = true;
+        if (p.response.fromServiceWorker) e.fromServiceWorker = true;
+        if (p.response.timing) e.timing = p.response.timing;
+        e.responseTs = p.timestamp;
+      }
       break;
     }
     case 'Network.loadingFinished': {
       const e = s.netById.get(p.requestId);
-      if (e) e.encodedSize = p.encodedDataLength;
+      if (e) { e.encodedSize = p.encodedDataLength; e.endTimestamp = p.timestamp; e.durationMs = Math.round((p.timestamp - e.timestamp) * 1000); }
       break;
     }
     case 'Network.loadingFailed': {
       const e = s.netById.get(p.requestId);
-      if (e) e.error = p.errorText;
+      if (e) {
+        // 204/304/HEAD legitimately finish with ERR_ABORTED (no body stream) —
+        // reporting them as errors makes successes look like failures.
+        const noBodyStatus = e.status === 204 || e.status === 304 || e.method === 'HEAD';
+        if (p.errorText === 'net::ERR_ABORTED' && (noBodyStatus || e.type === 'EventSource')) {
+          e.endTimestamp = p.timestamp; e.durationMs = Math.round((p.timestamp - e.timestamp) * 1000);
+        } else e.error = p.errorText;
+      }
       break;
     }
 
@@ -213,7 +290,7 @@ function routeEvent(tabId, s, method, p) {
             return (a.description || 'Object') + ' {' + inner + (a.preview.overflow ? ', …' : '') + '}';
           }
           return a.description || a.type;
-        }).join(' '),
+        }).join(' ').replace(/\x1b\[[0-9;]*[A-Za-z]/g, ''),
         timestamp: p.timestamp,
         url: p.stackTrace && p.stackTrace.callFrames[0] && p.stackTrace.callFrames[0].url,
       };
@@ -271,6 +348,7 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
 // ---------- tools ----------
 
 const NET_PRESETS = {
+  'None':     { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 },
   'Offline':  { offline: true, latency: 0, downloadThroughput: 0, uploadThroughput: 0 },
   'Slow 3G':  { offline: false, latency: 400, downloadThroughput: 50 * 1024, uploadThroughput: 50 * 1024 },
   'Fast 3G':  { offline: false, latency: 150, downloadThroughput: 1.6 * 1024 * 1024 / 8, uploadThroughput: 750 * 1024 / 8 },
@@ -279,35 +357,55 @@ const NET_PRESETS = {
 };
 
 export const cdpTools = {
-  async list_network_requests({ pageId, pageSize, pageIdx, resourceTypes }) {
+  async list_network_requests({ pageId, pageSize, pageIdx, resourceTypes, method, url }) {
     const s = await ensureDebugger(pageId, ['Network']);
-    let list = s.currentLoader ? s.net.filter(r => r.loaderId === s.currentLoader) : s.net;
+    // Preflight entries carry a different loaderId — keep them visible (tagged)
+    // instead of silently dropping them.
+    let list = s.currentLoader ? s.net.filter(r => r.loaderId === s.currentLoader || r.preflight) : s.net;
     if (resourceTypes && resourceTypes.length) list = list.filter(r => resourceTypes.includes(r.type));
+    if (method) list = list.filter(r => r.method === String(method).toUpperCase());
+    if (url) { const needle = String(url).toLowerCase(); list = list.filter(r => r.url.toLowerCase().includes(needle)); }
     const start = (pageIdx || 0) * (pageSize || list.length);
     const items = list.slice(start, pageSize ? start + pageSize : undefined);
-    return { total: list.length, requests: items.map(({ postData, requestHeaders, responseHeaders, ...r }) => r) };
+    return { total: list.length, requests: items.map(({ postData, requestHeaders, responseHeaders, frames, ...r }) => ({ ...r, frames: frames ? frames.length : undefined })) };
   },
 
   async get_network_request({ pageId, reqid, requestFilePath, responseFilePath }) {
     const s = await ensureDebugger(pageId, ['Network']);
-    const list = s.currentLoader ? s.net.filter(r => r.loaderId === s.currentLoader) : s.net;
+    const list = s.currentLoader ? s.net.filter(r => r.loaderId === s.currentLoader || r.preflight) : s.net;
     let e;
     if (reqid === undefined) e = list[list.length - 1];
     else e = list.find(r => r.reqid === reqid);
     if (!e) throw new Error(reqid === undefined ? 'no network requests recorded' : 'no such request: ' + reqid);
-    let body;
-    try {
-      const r = await cdp(pageId, 'Network.getResponseBody', { requestId: e.requestId });
-      body = r.base64Encoded
-        ? new TextDecoder().decode(Uint8Array.from(atob(r.body), c => c.charCodeAt(0)))
-        : r.body;
-    } catch {}
-    const out = { ...e, responseBody: body };
+    let body, bodyBase64;
+    if (e.redirectTo) {
+      // Redirect hop: getResponseBody only ever returns the FINAL hop's body —
+      // returning it here would silently attribute it to this hop.
+      e = { ...e, bodyNote: 'redirect hop — body lives on the final request (reqid ' + (list[list.length - 1] && list[list.length - 1].reqid) + ')' };
+    } else {
+      try {
+        const r = await cdp(pageId, 'Network.getResponseBody', { requestId: e.requestId });
+        if (r.base64Encoded) {
+          // Binary-safe: never TextDecoder-mangle raw bytes. Text bodies stay
+          // inline; undecodable bytes come back as base64.
+          try { body = new TextDecoder('utf-8', { fatal: true }).decode(Uint8Array.from(atob(r.body), c => c.charCodeAt(0))); }
+          catch { bodyBase64 = r.body; }
+        } else body = r.body;
+      } catch {}
+    }
+    const out = { ...e, responseBody: body, responseBodyBase64: bodyBase64 };
+    const INLINE_CAP = 200000;
+    if (body && body.length > INLINE_CAP) {
+      out.responseBody = body.slice(0, INLINE_CAP);
+      out.responseBodyTruncated = true;
+      out.responseBodyNote = 'truncated at ' + INLINE_CAP + ' chars — use responseFilePath for the full body';
+    }
     if (requestFilePath || responseFilePath) {
       return {
-        file: responseFilePath ? { path: responseFilePath, content: body || '' } : undefined,
+        // Raw bytes to disk: pass the base64 wire form through untouched.
+        file: responseFilePath ? { path: responseFilePath, content: bodyBase64 !== undefined ? bodyBase64 : (body || ''), base64: bodyBase64 !== undefined } : undefined,
         requestFile: requestFilePath ? { path: requestFilePath, content: e.postData || '' } : undefined,
-        meta: { ...e, responseBody: undefined },
+        meta: { ...e, responseBody: undefined, responseBodyBase64: undefined },
       };
     }
     return out;
@@ -316,7 +414,11 @@ export const cdpTools = {
   async list_console_messages({ pageId, pageSize, pageIdx, types }) {
     const s = await ensureDebugger(pageId, ['Runtime', 'Log']);
     let list = s.console;
-    if (types && types.length) list = list.filter(m => types.includes(m.type));
+    // CDP calls warn-level 'warning' — accept the colloquial spelling too.
+    if (types && types.length) {
+      const want = types.map(t => t === 'warn' ? 'warning' : t);
+      list = list.filter(m => want.includes(m.type));
+    }
     const start = (pageIdx || 0) * (pageSize || list.length);
     const items = list.slice(start, pageSize ? start + pageSize : undefined);
     return { total: list.length, messages: items };
@@ -331,73 +433,107 @@ export const cdpTools = {
 
   async handle_dialog({ pageId, action, promptText }) {
     const s = await ensureDebugger(pageId, ['Page']);
-    if (!s.dialogQueue.length) throw new Error('no open dialog on this page');
-    const d = s.dialogQueue.shift();
-    await cdp(pageId, 'Page.handleJavaScriptDialog', {
-      accept: action === 'accept', promptText,
-    });
-    return { handled: d, action };
+    if (s.dialogQueue.length) {
+      const d = s.dialogQueue.shift();
+      try {
+        await cdp(pageId, 'Page.handleJavaScriptDialog', {
+          accept: action === 'accept', promptText,
+        });
+      } catch (e) {
+        if (/no dialog/i.test(String(e && e.message || e))) throw new Error('queued dialog was already dismissed — nothing to handle');
+        throw e;
+      }
+      return { handled: d, action };
+    }
+    // A dialog opened BEFORE the debugger attached never fired
+    // javascriptDialogOpening — the queue is empty but a modal may be up.
+    // Send the handle command blind; -32602 means truly nothing is open.
+    try {
+      await cdp(pageId, 'Page.handleJavaScriptDialog', {
+        accept: action === 'accept', promptText,
+      }, 5000);
+      return { handled: { type: 'unknown', note: 'dialog opened before debugger attach' }, action };
+    } catch (e) {
+      if (/no dialog|invalid|-32602/i.test(String(e && e.message || e))) throw new Error('no open dialog on this page');
+      throw e;
+    }
   },
 
-  async emulate({ pageId, networkConditions, cpuThrottlingRate, geolocation, userAgent, colorScheme, viewport, extraHttpHeaders }) {
-    await ensureDebugger(pageId, ['Network', 'Emulation']);
-    const applied = {};
+  async emulate({ pageId, networkConditions, cpuThrottlingRate, geolocation, userAgent, colorScheme, reducedMotion, timezoneId, locale, viewport, extraHttpHeaders }) {
+    // Validate EVERYTHING before touching the page — a bad value must not
+    // leave partial emulation applied behind a thrown error.
+    const plan = []; // [method, params, key, value]
     if (networkConditions !== undefined) {
       const preset = NET_PRESETS[networkConditions];
-      if (!preset) throw new Error('unknown network preset: ' + networkConditions);
-      await cdp(pageId, 'Network.emulateNetworkConditions', preset);
-      applied.networkConditions = networkConditions;
+      if (!preset) throw new Error('unknown network preset: ' + networkConditions + ' (use "None" to clear)');
+      plan.push(['Network.emulateNetworkConditions', preset, 'networkConditions', networkConditions]);
     }
     if (cpuThrottlingRate !== undefined) {
       const rate = Number(cpuThrottlingRate);
-      if (!Number.isFinite(rate) || rate < 1) throw new Error('cpuThrottlingRate must be a number >= 1');
-      await cdp(pageId, 'Emulation.setCPUThrottlingRate', { rate });
-      applied.cpuThrottlingRate = rate;
+      if (!Number.isFinite(rate) || rate < 1 || rate > 100) throw new Error('cpuThrottlingRate must be a number 1-100');
+      plan.push(['Emulation.setCPUThrottlingRate', { rate }, 'cpuThrottlingRate', rate]);
     }
     if (geolocation !== undefined) {
-      if (!geolocation) await cdp(pageId, 'Emulation.clearGeolocationOverride');
+      if (!geolocation) plan.push(['Emulation.clearGeolocationOverride', {}, 'geolocation', 'cleared']);
       else {
-        const [lat, lon] = String(geolocation).split(',').map(Number);
-        if (!Number.isFinite(lat) || !Number.isFinite(lon)) throw new Error('geolocation must be "lat,lon" numbers');
-        await cdp(pageId, 'Emulation.setGeolocationOverride', { latitude: lat, longitude: lon, accuracy: 100 });
+        const [lat, lon, extra] = String(geolocation).split(',').map(Number);
+        if (!Number.isFinite(lat) || !Number.isFinite(lon) || extra !== undefined || Math.abs(lat) > 90 || Math.abs(lon) > 180) {
+          throw new Error('geolocation must be "lat,lon" with |lat|<=90 |lon|<=180');
+        }
+        plan.push(['Emulation.setGeolocationOverride', { latitude: lat, longitude: lon, accuracy: 100 }, 'geolocation', geolocation]);
       }
-      applied.geolocation = geolocation || 'cleared';
     }
-    if (userAgent !== undefined) {
-      await cdp(pageId, 'Emulation.setUserAgentOverride', { userAgent });
-      applied.userAgent = userAgent || 'cleared';
-    }
+    if (userAgent !== undefined) plan.push(['Emulation.setUserAgentOverride', { userAgent }, 'userAgent', userAgent || 'cleared']);
+    const mediaFeatures = [];
+    const applied = {};
     if (colorScheme !== undefined) {
-      await cdp(pageId, 'Emulation.setEmulatedMedia', {
-        features: [{ name: 'prefers-color-scheme', value: colorScheme === 'auto' ? '' : colorScheme }],
-      });
+      if (!['dark', 'light', 'auto'].includes(colorScheme)) throw new Error('colorScheme must be dark|light|auto');
+      mediaFeatures.push({ name: 'prefers-color-scheme', value: colorScheme === 'auto' ? '' : colorScheme });
       applied.colorScheme = colorScheme;
     }
+    if (reducedMotion !== undefined) {
+      if (!['reduce', 'no-preference', 'auto'].includes(reducedMotion)) throw new Error('reducedMotion must be reduce|no-preference|auto');
+      mediaFeatures.push({ name: 'prefers-reduced-motion', value: reducedMotion === 'auto' ? '' : reducedMotion });
+      applied.reducedMotion = reducedMotion;
+    }
+    if (mediaFeatures.length) plan.push(['Emulation.setEmulatedMedia', { features: mediaFeatures }, null]);
+    if (timezoneId !== undefined) plan.push(['Emulation.setTimezoneOverride', { timezoneId }, 'timezoneId', timezoneId || 'cleared']);
+    if (locale !== undefined) plan.push(['Emulation.setLocaleOverride', { locale }, 'locale', locale || 'cleared']);
     if (viewport !== undefined) {
       if (!viewport) {
-        await cdp(pageId, 'Emulation.clearDeviceMetricsOverride');
-        await cdp(pageId, 'Emulation.setTouchEmulationEnabled', { enabled: false }).catch(() => {});
-        applied.viewport = 'cleared';
+        plan.push(['Emulation.clearDeviceMetricsOverride', {}, 'viewport', 'cleared']);
+        // Clearing the viewport must also drop touch emulation.
+        plan.push(['Emulation.setTouchEmulationEnabled', { enabled: false }, null]);
       } else {
-      const m = viewport.match(/^(\d+)x(\d+)x([\d.]+)((?:,mobile|,touch|,landscape)*)$/);
-      if (!m) throw new Error('bad viewport format: ' + viewport);
-      const flags = m[4];
-      const [, w, h, dpr] = m;
-      const dprN = +dpr;
-      if (dprN <= 0 || dprN > 10) throw new Error('viewport dpr out of range: ' + dpr);
-      await cdp(pageId, 'Emulation.setDeviceMetricsOverride', {
-        width: Math.min(+w, 16384), height: Math.min(+h, 16384), deviceScaleFactor: dprN,
-        mobile: flags.includes('mobile'),
-        screenOrientation: flags.includes('landscape')
-          ? { type: 'landscapePrimary', angle: 90 } : { type: 'portraitPrimary', angle: 0 },
-      });
-      if (flags.includes('touch')) await cdp(pageId, 'Emulation.setTouchEmulationEnabled', { enabled: true });
-      applied.viewport = viewport;
+        const m = viewport.match(/^(\d+)x(\d+)x([\d.]+)((?:,mobile|,touch|,landscape)*)$/);
+        if (!m) throw new Error('bad viewport format: ' + viewport);
+        const flags = m[4];
+        const [, w, h, dpr] = m;
+        const dprN = +dpr;
+        if (+w < 1 || +h < 1) throw new Error('viewport dims must be >= 1: ' + viewport);
+        if (!Number.isFinite(dprN) || dprN <= 0 || dprN > 10) throw new Error('viewport dpr out of range: ' + dpr);
+        plan.push(['Emulation.setDeviceMetricsOverride', {
+          width: Math.min(+w, 16384), height: Math.min(+h, 16384), deviceScaleFactor: dprN,
+          mobile: flags.includes('mobile'),
+          screenOrientation: flags.includes('landscape')
+            ? { type: 'landscapePrimary', angle: 90 } : { type: 'portraitPrimary', angle: 0 },
+        }, 'viewport', viewport]);
+        // Touch must track the flag both ways — otherwise a second emulate
+        // without ',touch' leaves stale touch emulation on.
+        plan.push(['Emulation.setTouchEmulationEnabled', { enabled: flags.includes('touch') }, null]);
       }
     }
     if (extraHttpHeaders !== undefined) {
-      await cdp(pageId, 'Network.setExtraHTTPHeaders', { headers: extraHttpHeaders ? JSON.parse(extraHttpHeaders) : {} });
-      applied.extraHttpHeaders = extraHttpHeaders ? 'set' : 'cleared';
+      let headers = {};
+      if (extraHttpHeaders) {
+        try { headers = JSON.parse(extraHttpHeaders); } catch { throw new Error('extraHttpHeaders must be a JSON object string'); }
+      }
+      plan.push(['Network.setExtraHTTPHeaders', { headers }, 'extraHttpHeaders', extraHttpHeaders ? 'set' : 'cleared']);
+    }
+    await ensureDebugger(pageId, ['Network', 'Emulation']);
+    for (const [method, params, key, value] of plan) {
+      await cdp(pageId, method, params);
+      if (key) applied[key] = value;
     }
     return { applied };
   },
@@ -405,11 +541,13 @@ export const cdpTools = {
   async performance_start_trace({ pageId, reload }) {
     const s = await ensureDebugger(pageId, ['Performance', 'Tracing']);
     if (s.tracing) throw new Error('trace already running');
-    s.tracing = { chunks: [], resolve: null, reject: null };
     await cdp(pageId, 'Tracing.start', {
       categories: 'devtools.timeline,disabled-by-default-v8.cpu_profiler,v8.execute,blink.user_timing',
       transferMode: 'ReportEvents',
     });
+    // Set tracing only after Tracing.start succeeded — a failed start must
+    // not leave phantom state that wedges later start/stop calls.
+    s.tracing = { chunks: [], resolve: null, reject: null, stopping: false };
     if (reload) await chrome.tabs.reload(pageId);
     return { started: true };
   },
@@ -417,9 +555,19 @@ export const cdpTools = {
   async performance_stop_trace({ pageId, filePath }) {
     const s = await ensureDebugger(pageId, ['Performance', 'Tracing']);
     if (!s.tracing) throw new Error('no active trace');
+    if (s.tracing.stopping) throw new Error('trace stop already in progress');
+    s.tracing.stopping = true;
     const done = new Promise((resolve, reject) => { s.tracing.resolve = resolve; s.tracing.reject = reject; });
-    await cdp(pageId, 'Tracing.end');
-    const chunks = await Promise.race([done, new Promise((_, r) => setTimeout(() => r(new Error('trace flush timeout')), 60000))]);
+    let chunks;
+    try {
+      await cdp(pageId, 'Tracing.end');
+      chunks = await Promise.race([done, new Promise((_, r) => setTimeout(() => r(new Error('trace flush timeout')), 60000))]);
+    } catch (e) {
+      // Leave the stop retryable: tracingComplete may still arrive, but a
+      // failed Tracing.end or a flush timeout must not wedge the tab.
+      if (s.tracing) s.tracing.stopping = false;
+      throw e;
+    }
     let metrics;
     try {
       const m = await cdp(pageId, 'Performance.getMetrics');

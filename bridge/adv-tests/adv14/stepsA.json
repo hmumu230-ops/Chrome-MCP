@@ -1,0 +1,16 @@
+[
+ {"name":"A-mkpage","tool":"new_page","args":{"url":"http://127.0.0.1:8128/"},"timeoutMs":20000,"retry":180000,"store":{"PID":"pageId"}},
+ {"name":"A-eval-alert","tool":"evaluate_script","args":{"pageId":"$PID","function":"() => { alert('PREATTACH-A'); return 'ret-A'; }"},"timeoutMs":90000,"await_":false},
+ {"sleep":2000},
+ {"name":"A-handle-accept","tool":"handle_dialog","args":{"pageId":"$PID","action":"accept"},"timeoutMs":20000},
+ {"collect":true,"collectMs":30000},
+ {"name":"A-snap","tool":"take_snapshot","args":{"pageId":"$PID"},"timeoutMs":15000},
+
+ {"name":"A2-eval-alert","tool":"evaluate_script","args":{"pageId":"$PID","function":"() => { alert('PREATTACH-B'); return 'ret-B'; }"},"timeoutMs":90000,"await_":false},
+ {"sleep":2000},
+ {"name":"A2-detach","tool":"detach_debugger","args":{"pageId":"$PID"},"timeoutMs":15000},
+ {"name":"A2-handle-after-detach","tool":"handle_dialog","args":{"pageId":"$PID","action":"accept"},"timeoutMs":20000},
+ {"collect":true,"collectMs":30000},
+ {"name":"A2-snap","tool":"take_snapshot","args":{"pageId":"$PID"},"timeoutMs":15000},
+ {"name":"A2-close","tool":"close_page","args":{"pageId":"$PID"},"timeoutMs":15000}
+]

@@ -1,0 +1,6 @@
+[
+  { "name": "open csp", "tool": "new_page", "args": { "url": "http://localhost:8126/csp" }, "sleep": 3500 },
+  { "name": "open with-iframe", "tool": "new_page", "args": { "url": "http://localhost:8126/with-iframe" }, "sleep": 3500 },
+  { "name": "open with-xiframe", "tool": "new_page", "args": { "url": "http://localhost:8126/with-xiframe" }, "sleep": 3500 },
+  { "name": "list_pages", "tool": "list_pages", "args": {} }
+]

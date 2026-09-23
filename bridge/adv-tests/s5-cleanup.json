@@ -1,0 +1,6 @@
+[
+  {"label": "verify example.com clean", "tool": "get_cookies", "args": {"pageId": 301370766}},
+  {"label": "verify 8199 clean", "tool": "get_cookies", "args": {"pageId": 301371023}},
+  {"label": "close example tab", "tool": "close_page", "args": {"pageId": 301370766}},
+  {"label": "close 8199 tab", "tool": "close_page", "args": {"pageId": 301371023}}
+]

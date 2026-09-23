@@ -1,0 +1,42 @@
+[
+ {"name":"P2-mkpage","tool":"new_page","args":{"url":"http://127.0.0.1:8128/"},"timeoutMs":20000,"retry":180000,"store":{"PID":"pageId"}},
+ {"name":"P2-arm","tool":"evaluate_script","args":{"pageId":"$PID","function":"() => { window.onbeforeunload = (e) => { e.preventDefault(); e.returnValue='dirty'; return 'dirty'; }; return 'armed'; }"},"timeoutMs":20000,"retry":60000},
+ {"name":"P2-attachdbg","tool":"list_console_messages","args":{"pageId":"$PID"},"timeoutMs":20000},
+ {"name":"P2-closepage-dirty","tool":"close_page","args":{"pageId":"$PID"},"timeoutMs":15000},
+ {"name":"P2-listpages-after-close","tool":"list_pages","args":{},"timeoutMs":15000},
+ {"name":"P2-handle-beforeunload-accept","tool":"handle_dialog","args":{"pageId":"$PID","action":"accept"},"timeoutMs":15000},
+ {"sleep":1500},
+ {"name":"P2-listpages-final","tool":"list_pages","args":{},"timeoutMs":15000},
+
+ {"name":"P3-mkpage","tool":"new_page","args":{"url":"http://127.0.0.1:8128/"},"timeoutMs":20000,"store":{"PID":"pageId"}},
+ {"name":"P3-arm","tool":"evaluate_script","args":{"pageId":"$PID","function":"() => { window.onbeforeunload = (e) => { e.preventDefault(); e.returnValue='dirty'; return 'dirty'; }; return 'armed'; }"},"timeoutMs":20000},
+ {"name":"P3-navigate-dirty","tool":"navigate_page","args":{"pageId":"$PID","type":"url","url":"http://127.0.0.1:8128/popup.html"},"timeoutMs":20000},
+ {"name":"P3-listpages","tool":"list_pages","args":{},"timeoutMs":15000},
+ {"name":"P3-handle-beforeunload-dismiss","tool":"handle_dialog","args":{"pageId":"$PID","action":"dismiss"},"timeoutMs":15000},
+ {"name":"P3-eval-check-still-here","tool":"evaluate_script","args":{"pageId":"$PID","function":"() => location.pathname + '|armed=' + !!window.onbeforeunload"},"timeoutMs":20000},
+ {"name":"P3-disarm","tool":"evaluate_script","args":{"pageId":"$PID","function":"() => { window.onbeforeunload = null; return 'disarmed'; }"},"timeoutMs":20000},
+
+ {"name":"P4-popup-open","tool":"evaluate_script","args":{"pageId":"$PID","function":"() => { const w = window.open('/popup.html','adv14pop','width=400,height=300'); return w ? 'opened' : 'blocked'; }"},"timeoutMs":20000},
+ {"sleep":2000},
+ {"name":"P4-listpages-popup","tool":"list_pages","args":{},"timeoutMs":15000},
+
+ {"name":"P5-print","tool":"evaluate_script","args":{"pageId":"$PID","function":"() => { window.print(); return 'print-returned'; }"},"timeoutMs":30000,"await_":false},
+ {"sleep":4000},
+ {"name":"P5-snap-during-print","tool":"take_snapshot","args":{"pageId":"$PID"},"timeoutMs":12000},
+ {"name":"P5-escape","tool":"press_key","args":{"pageId":"$PID","key":"Escape"},"timeoutMs":15000},
+ {"collect":true,"collectMs":40000},
+ {"name":"P5-snap-after-print","tool":"take_snapshot","args":{"pageId":"$PID"},"timeoutMs":15000},
+
+ {"name":"P6-nav-onload-alert","tool":"navigate_page","args":{"pageId":"$PID","type":"url","url":"http://127.0.0.1:8128/onload.html"},"timeoutMs":20000},
+ {"sleep":2000},
+ {"name":"P6-handle-onload-alert","tool":"handle_dialog","args":{"pageId":"$PID","action":"accept"},"timeoutMs":15000},
+ {"name":"P6-snap","tool":"take_snapshot","args":{"pageId":"$PID"},"timeoutMs":15000},
+
+ {"name":"P7-fullscreen","tool":"evaluate_script","args":{"pageId":"$PID","function":"() => document.documentElement.requestFullscreen().then(()=>'fs-ok').catch(e=>'fs-err:'+e.message)"},"timeoutMs":20000},
+ {"name":"P7-escape","tool":"press_key","args":{"pageId":"$PID","key":"Escape"},"timeoutMs":15000},
+ {"name":"P7-notify","tool":"evaluate_script","args":{"pageId":"$PID","function":"() => Promise.race([Notification.requestPermission().then(p=>'perm:'+p), new Promise(r=>setTimeout(()=>r('still-pending-6s'),6000))])"},"timeoutMs":20000},
+ {"name":"P7-geo","tool":"evaluate_script","args":{"pageId":"$PID","function":"() => Promise.race([new Promise(res=>navigator.geolocation.getCurrentPosition(p=>res('geo-ok'),e=>res('geo-err:'+e.message))), new Promise(r=>setTimeout(()=>r('geo-pending-6s'),6000))])"},"timeoutMs":20000},
+ {"name":"P7-showModalDialog","tool":"evaluate_script","args":{"pageId":"$PID","function":"() => typeof window.showModalDialog"},"timeoutMs":15000},
+ {"name":"P7-escape2","tool":"press_key","args":{"pageId":"$PID","key":"Escape"},"timeoutMs":15000},
+ {"name":"P7-close","tool":"close_page","args":{"pageId":"$PID"},"timeoutMs":15000}
+]

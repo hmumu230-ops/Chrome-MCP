@@ -1,0 +1,6 @@
+[
+  { "name": "post-reattach live preview", "tool": "evaluate_script", "args": { "pageId": 301370503, "function": "() => { console.log({postReattach:{deep:{x:1}}}); console.log(new Map([['k',9]])); console.log(document.documentElement); return 'ok'; }" }, "sleep": 1200 },
+  { "name": "list tail", "tool": "list_console_messages", "args": { "pageId": 301370503, "pageSize": 6, "pageIdx": 166 } },
+  { "name": "csp iframe check", "tool": "evaluate_script", "args": { "pageId": 301371093, "function": "() => { const f=document.getElementById('f'); try{ f.contentWindow.flog('VIA-EVAL'); return 'called'; }catch(e){ return 'err:'+e.name; } }" }, "sleep": 800 },
+  { "name": "iframe console again", "tool": "list_console_messages", "args": { "pageId": 301371093 } }
+]

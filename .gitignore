@@ -7,3 +7,12 @@ Thumbs.db
 
 bridge/test-out/
 bridge/*.png
+
+extension/.bridge-token
+
+# adversarial-test run artifacts (keep the .mjs scripts + REPORT.md files)
+bridge/adv-tests/**/*-results.*
+bridge/adv-tests/**/*log*.txt
+bridge/adv-tests/*.sid
+bridge/adv-tests/**/out*/
+bridge/adv-tests/**/out*.json

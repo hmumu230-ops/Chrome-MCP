@@ -30,27 +30,52 @@ export class WSClient {
   }
 
   async connect() {
+    if (this._connecting) return;
     if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) return;
+    this._connecting = true;
     // Probe with fetch first: a refused WebSocket gets logged as an extension
     // error in chrome://extensions (visible noise), while a failed fetch is
     // just a promise rejection. Only open the WS when the bridge answers HTTP.
+    // The guard above is NOT enough: the probe awaits while this.ws is still
+    // null, so overlapping connect() calls each open a socket. With the
+    // bridge's last-wins slot, two sockets then kill each other on every
+    // reconnect — a self-sustaining connect storm.
     try {
       const probe = new URL(this.url);
       const ok = await fetch(`http://${probe.host}/`, { signal: AbortSignal.timeout(2000) }).then(r => r.ok).catch(() => false);
       if (!ok) { this.scheduleReconnect(); return; }
     } catch { this.scheduleReconnect(); return; }
+    finally { this._connecting = false; }
+    // A socket may have appeared while the probe was in flight.
+    if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) return;
+    // If the bridge enforces MCP_EXT_TOKEN it writes extension/.bridge-token —
+    // fetch our own packaged file and append it to the WS URL.
+    let url = this.url;
     try {
-      this.ws = new WebSocket(this.url);
+      const t = await fetch(chrome.runtime.getURL('.bridge-token')).then(r => r.ok ? r.text() : null).catch(() => null);
+      if (t && t.trim()) url += (url.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(t.trim());
+    } catch {}
+    let ws;
+    try {
+      ws = new WebSocket(url);
+      this.ws = ws;
     } catch (e) {
       this.scheduleReconnect();
       return;
     }
-    this.ws.onopen = () => {
+    // A socket stuck in CONNECTING (blackholed handshake) never fires
+    // onopen/onclose — and the readyState guard above would make connect()
+    // early-return forever. Time it out so onclose drives the next retry.
+    const connectTimer = setTimeout(() => {
+      if (ws.readyState === WebSocket.CONNECTING) try { ws.close(); } catch {}
+    }, 8000);
+    ws.onopen = () => {
+      clearTimeout(connectTimer);
       this.connected = true;
       this.backoff = 1000;
       this.send({ type: 'hello', name: 'chrome-mcp-extension', version: chrome.runtime.getManifest().version });
     };
-    this.ws.onmessage = (ev) => {
+    ws.onmessage = (ev) => {
       let msg;
       try { msg = JSON.parse(ev.data); } catch { return; }
       if (msg.type === 'call') {
@@ -63,20 +88,23 @@ export class WSClient {
         // heartbeat ack, nothing to do
       }
     };
-    this.ws.onclose = () => {
+    ws.onclose = () => {
+      clearTimeout(connectTimer);
       this.connected = false;
-      this.ws = null;
+      // Don't clobber a newer socket — a stale close must not clear its slot.
+      if (this.ws === ws) this.ws = null;
       this.scheduleReconnect();
     };
-    this.ws.onerror = () => {
-      try { this.ws && this.ws.close(); } catch {}
+    ws.onerror = () => {
+      try { ws.close(); } catch {}
     };
   }
 
   scheduleReconnect() {
+    if (this._reconnectTimer) return; // one pending reconnect at a time
     const delay = this.backoff;
     this.backoff = Math.min(this.backoff * 2, 15000);
-    setTimeout(() => this.connect(), delay);
+    this._reconnectTimer = setTimeout(() => { this._reconnectTimer = null; this.connect(); }, delay);
   }
 
   send(obj) {

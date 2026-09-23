@@ -1,4 +1,5 @@
 // Shared helpers for running code inside tabs.
+import { hasOpenDialog } from './cdp.js';
 
 // uid -> frameId registry, per tab. Populated by take_snapshot; consulted by
 // element tools so uids inside (same- or cross-origin) iframes work.
@@ -67,6 +68,9 @@ function unwrapForFrame(d) {
 
 // Run `func` in one frame (default: main frame, isolated world).
 export async function runInPage(tabId, func, args = [], frameId) {
+  // executeScript queues behind a modal JS dialog — queued calls then fire
+  // LATER against a changed page. Fail fast so the caller handles the dialog.
+  if (hasOpenDialog(tabId)) throw new Error('a JavaScript dialog is open on this page — call handle_dialog first');
   const target = frameId !== undefined ? { tabId, frameIds: [frameId] } : { tabId };
   const [r] = await chrome.scripting.executeScript({ target, func, args: cleanArgs(args), world: 'ISOLATED' });
   if (!r) throw new Error('no result from page');
@@ -76,6 +80,7 @@ export async function runInPage(tabId, func, args = [], frameId) {
 
 // Run `func` in every frame; returns [{frameId, result|error}].
 export async function runInAllFrames(tabId, func, args = []) {
+  if (hasOpenDialog(tabId)) throw new Error('a JavaScript dialog is open on this page — call handle_dialog first');
   const res = await chrome.scripting.executeScript({
     target: { tabId, allFrames: true },
     func, args: cleanArgs(args), world: 'ISOLATED',

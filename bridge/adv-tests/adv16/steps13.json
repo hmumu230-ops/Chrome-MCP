@@ -1,0 +1,11 @@
+[
+  { "name": "emit misc types", "tool": "evaluate_script", "args": { "pageId": 301370503, "function": "() => { if (window.__adv16m) return 'dup'; window.__adv16m = 1; console.log(new Error('err-obj')); console.log(/regex-foo/gi); console.log(new Date(0)); console.log(Promise.resolve(1)); console.log(new BigInt64Array([5n,7n])); console.log({fresh:'preview-check'}); console.warn('warn-after-reattach'); console.clear(); return 'emitted-misc'; }" }, "sleep": 1500 },
+  { "name": "list misc", "tool": "list_console_messages", "args": { "pageId": 301370503, "pageSize": 15 } },
+  { "name": "emit flood2 2100", "tool": "evaluate_script", "args": { "pageId": 301370503, "function": "() => { if (window.__adv16f2) return 'dup'; window.__adv16f2 = 1; for (let i=0;i<2100;i++) console.log('Q' + String(i).padStart(4,'0')); return 'emitted-flood2'; }" }, "sleep": 3000 },
+  { "name": "flood2 head", "tool": "list_console_messages", "args": { "pageId": 301370503, "pageSize": 5 } },
+  { "name": "flood2 tail", "tool": "list_console_messages", "args": { "pageId": 301370503, "pageSize": 5, "pageIdx": 399 } },
+  { "name": "flood2 beyond-cap", "tool": "list_console_messages", "args": { "pageId": 301370503, "pageSize": 5, "pageIdx": 400 } },
+  { "name": "detach", "tool": "detach_debugger", "args": { "pageId": 301370503 }, "sleep": 1000 },
+  { "name": "list after reattach", "tool": "list_console_messages", "args": { "pageId": 301370503, "pageSize": 8 } },
+  { "name": "list after reattach tail", "tool": "list_console_messages", "args": { "pageId": 301370503, "pageSize": 5, "pageIdx": 419 } }
+]

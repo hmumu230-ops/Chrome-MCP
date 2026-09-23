@@ -1,0 +1,45 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>adv05-drag</title>
+<style>
+  body{font-family:monospace}
+  #src{width:100px;height:50px;background:#8cf;border:1px solid #00f;text-align:center;line-height:50px}
+  #dst{width:160px;height:80px;background:#eee;border:2px dashed #888;margin-top:20px;line-height:80px;text-align:center}
+  #mslider{width:200px;height:20px;background:#ddd;position:relative;margin-top:30px}
+  #mthumb{width:20px;height:20px;background:#f80;position:absolute;left:0;top:0}
+  #mdrag{width:60px;height:60px;background:#6c6;position:absolute;left:0;top:120px}
+  #log{font-size:10px;white-space:pre}
+</style></head><body>
+<div id="src" draggable="true" tabindex="0">HTML5-SRC</div>
+<div id="dst" tabindex="0">DROP-ZONE</div>
+<div id="mslider"><div id="mthumb" tabindex="0"></div></div>
+<div id="mdrag" tabindex="0">MOUSE-DRAG</div>
+<label>range <input id="rng" type="range" min="0" max="100" value="0" style="width:200px"></label>
+<div id="log"></div>
+<script>
+window.draglog=[];
+const L=(s)=>{window.draglog.push(s);document.getElementById('log').textContent=window.draglog.join('\n');};
+const src=document.getElementById('src'),dst=document.getElementById('dst');
+src.addEventListener('dragstart',e=>{L('dragstart');e.dataTransfer.setData('text/plain','payload');e.dataTransfer.effectAllowed='move';});
+src.addEventListener('dragend',e=>L('dragend drop='+e.dataTransfer.dropEffect));
+['dragenter','dragover','dragleave','drop'].forEach(t=>dst.addEventListener(t,e=>{e.preventDefault();L(t+(t==='drop'?(' data='+e.dataTransfer.getData('text/plain')):''));}));
+// mouse-drag box
+const md=document.getElementById('mdrag');
+md.addEventListener('mousedown',e=>{
+  L('mdown '+e.clientX+','+e.clientY);
+  const sx=e.clientX,sy=e.clientY,l0=md.offsetLeft,t0=md.offsetTop;
+  const mv=ev=>{md.style.left=(l0+ev.clientX-sx)+'px';md.style.top=(t0+ev.clientY-sy)+'px';};
+  const up=ev=>{L('mup '+ev.clientX+','+ev.clientY+' final='+md.style.left+','+md.style.top);document.removeEventListener('mousemove',mv);document.removeEventListener('mouseup',up);};
+  document.addEventListener('mousemove',mv);document.addEventListener('mouseup',up);
+});
+// thumb slider
+const th=document.getElementById('mthumb'),sl=document.getElementById('mslider');
+th.addEventListener('mousedown',e=>{
+  L('thumb-down '+e.clientX);
+  const mv=ev=>{const r=sl.getBoundingClientRect();let x=Math.min(Math.max(ev.clientX-r.left-10,0),r.width-20);th.style.left=x+'px';};
+  const up=ev=>{L('thumb-up left='+th.style.left);document.removeEventListener('mousemove',mv);document.removeEventListener('mouseup',up);};
+  document.addEventListener('mousemove',mv);document.addEventListener('mouseup',up);
+});
+document.getElementById('rng').addEventListener('input',e=>L('range input='+e.target.value));
+document.getElementById('rng').addEventListener('change',e=>L('range change='+e.target.value));
+</script>
+</body></html>

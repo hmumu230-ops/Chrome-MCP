@@ -6,6 +6,19 @@ async function getTab(tabId) {
   catch { throw new Error('no such page/tab: ' + tabId); }
 }
 
+// Navigation allowlist. file:// is a confirmed LFI (the tab loads local files
+// and page tools read their contents back out); chrome:/view-source:/blob:/
+// data: are either unscriptable or execute inline content. WHATWG strips
+// tab/LF/CR inside the scheme ("java\tscript:" parses as javascript:), so
+// normalize before matching or the check is trivially evaded.
+function checkNavUrl(url) {
+  if (!url || typeof url !== 'string') throw new Error('url required');
+  const u = url.trim().replace(/[\t\n\r]/g, '');
+  if (u === 'about:blank') return u;
+  if (!/^https?:\/\//i.test(u)) throw new Error('disallowed URL (http/https only): ' + u.slice(0, 40));
+  return u;
+}
+
 export const tabTools = {
   async list_pages() {
     const tabs = await chrome.tabs.query({});
@@ -23,15 +36,26 @@ export const tabTools = {
     if (isolatedContext) {
       const allowed = await chrome.extension.isAllowedIncognitoAccess();
       if (!allowed) throw new Error('extension is not allowed in incognito — enable "Allow in incognito" in chrome://extensions for this extension');
-      const win = await chrome.windows.create({ url: url || 'about:blank', incognito: true, focused: !background });
-      return { pageId: win.tabs[0].id, url, isolatedContext };
+      const win = await chrome.windows.create({ url: url ? checkNavUrl(url) : 'about:blank', incognito: true, focused: !background });
+      return { pageId: win.tabs[0].id, url: win.tabs[0].pendingUrl || win.tabs[0].url, isolatedContext };
     }
-    const tab = await chrome.tabs.create({ url: url || 'about:blank', active: !background });
-    return { pageId: tab.id, url };
+    const tab = await chrome.tabs.create({ url: url ? checkNavUrl(url) : 'about:blank', active: !background });
+    return { pageId: tab.id, url: tab.pendingUrl || tab.url };
   },
 
   async close_page({ pageId }) {
     if (!Number.isInteger(pageId)) throw new Error('pageId must be an integer tab id');
+    // A beforeunload prompt on a dirty+activated tab pends tabs.remove
+    // forever — race it, then dismiss the prompt via CDP and retry.
+    const gone = await Promise.race([
+      chrome.tabs.remove(pageId).then(() => true),
+      new Promise(r => setTimeout(() => r(false), 4000)),
+    ]);
+    if (gone) return { closed: pageId };
+    try {
+      await ensureDebugger(pageId, ['Page']);
+      await cdp(pageId, 'Page.handleJavaScriptDialog', { accept: true }, 5000);
+    } catch {}
     await chrome.tabs.remove(pageId);
     return { closed: pageId };
   },
@@ -47,11 +71,7 @@ export const tabTools = {
     await getTab(pageId);
     switch (type || 'url') {
       case 'url':
-        if (!url || typeof url !== 'string') throw new Error('url required');
-        // Schemes that execute inline content or bypass the URL bar entirely —
-        // navigating to these would run script in the tab's context.
-        if (/^(?:javascript|vbscript|data):/i.test(url)) throw new Error('disallowed URL scheme: ' + url.slice(0, 20));
-        await chrome.tabs.update(pageId, { url });
+        await chrome.tabs.update(pageId, { url: checkNavUrl(url) });
         break;
       case 'back':
       case 'forward': {
@@ -115,8 +135,13 @@ export const tabTools = {
     return { pageId, width, height };
   },
 
-  async wait_for({ pageId, text, textGone, time, timeout }) {
+  async wait_for({ pageId, text, textGone, time, timeout, ...rest }) {
     await getTab(pageId); // fail fast on closed/nonexistent tabs
+    // Unknown params must not be silently swallowed — {selector:'#x'} used to
+    // return {waited:0} looking like a successful wait when nothing waited.
+    const unknown = Object.keys(rest);
+    if (unknown.length) throw new Error('unknown wait_for params: ' + unknown.join(', ') + ' (supported: text, textGone, time, timeout)');
+    if (!text && !textGone && !time) throw new Error('wait_for needs at least one condition: text, textGone, or time');
     if (time) { await new Promise(r => setTimeout(r, Math.min(time, 60000))); }
     if (!text && !textGone) return { waited: time || 0 };
     const deadline = Date.now() + Math.min(Number(timeout) || 15000, 120000);

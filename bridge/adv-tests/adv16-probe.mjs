@@ -1,0 +1,10 @@
+const BASE = 'http://127.0.0.1:7890/mcp';
+const r = await fetch(BASE, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'probe', version: '0' } } }) });
+const sid = r.headers.get('mcp-session-id');
+console.log('init status', r.status, 'sid', sid);
+const t0 = performance.now();
+const r2 = await fetch(BASE, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream', 'mcp-session-id': sid }, body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'list_pages', arguments: {} } }) });
+const t = await r2.text();
+console.log('call status', r2.status, Math.round(performance.now() - t0) + 'ms');
+console.log(t.slice(0, 800));
+process.exit(0);

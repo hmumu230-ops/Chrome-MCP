@@ -1,6 +1,10 @@
 // Misc tools: cookies, downloads, readable-text extraction.
 import { ensureLib, runInPage, runInAllFrames } from './util.js';
 
+// Download ids this SW initiated — byExtId proved unreliable for filtering
+// on some builds, so track our own ids as well.
+const ourDownloads = new Set();
+
 export const miscTools = {
   async get_cookies({ pageId, name }) {
     const tab = await chrome.tabs.get(pageId);
@@ -40,8 +44,13 @@ export const miscTools = {
       orderBy: ['-startTime'],
       ...(state ? { state } : {}),
     });
+    // Scope to downloads WE initiated — the raw search would hand any MCP
+    // client the user's entire download history (paths, URLs, timestamps).
+    // byExtId alone proved unreliable on some builds — also trust ids we
+    // recorded at download_file time.
+    const ours = items.filter(d => d.byExtId === chrome.runtime.id || ourDownloads.has(d.id));
     return {
-      downloads: items.map(d => ({
+      downloads: ours.map(d => ({
         id: d.id, filename: d.filename, url: d.url, state: d.state,
         bytesReceived: d.bytesReceived, totalBytes: d.totalBytes,
         startTime: d.startTime, mime: d.mime, exists: d.exists, danger: d.danger,
@@ -82,11 +91,18 @@ export const miscTools = {
 
   async download_file({ url, filename, conflictAction }) {
     // Direct download into the browser's Downloads dir via chrome.downloads.
-    // http/https/data only — file:// would copy arbitrary local files (LFI).
-    if (!/^(?:https?|data):/i.test(String(url || ''))) throw new Error('download_file only accepts http(s)/data URLs');
+    // http/https only — file:// copies local files (LFI), and data: would
+    // drop arbitrary bytes into Downloads bypassing the bridge's filePath
+    // policy entirely.
+    if (!/^https?:\/\//i.test(String(url || '').trim())) throw new Error('download_file only accepts http(s) URLs');
+    // 'overwrite' could silently replace the user's existing downloads;
+    // 'prompt' pops UI on conflict — keep uniquify (default) + prompt allowed.
+    const ca = conflictAction === 'prompt' || conflictAction === 'uniquify' ? conflictAction : 'uniquify';
     const id = await chrome.downloads.download({
-      url, filename, conflictAction: conflictAction || 'uniquify', saveAs: false,
+      url, filename, conflictAction: ca, saveAs: false,
     });
+    ourDownloads.add(id);
+    if (ourDownloads.size > 500) ourDownloads.delete(ourDownloads.values().next().value);
     // Wait for terminal state (up to 2 min).
     const deadline = Date.now() + 120000;
     while (Date.now() < deadline) {
