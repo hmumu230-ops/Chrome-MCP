@@ -29,8 +29,16 @@ export class WSClient {
     this.connect();
   }
 
-  connect() {
+  async connect() {
     if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) return;
+    // Probe with fetch first: a refused WebSocket gets logged as an extension
+    // error in chrome://extensions (visible noise), while a failed fetch is
+    // just a promise rejection. Only open the WS when the bridge answers HTTP.
+    try {
+      const probe = new URL(this.url);
+      const ok = await fetch(`http://${probe.host}/`, { signal: AbortSignal.timeout(2000) }).then(r => r.ok).catch(() => false);
+      if (!ok) { this.scheduleReconnect(); return; }
+    } catch { this.scheduleReconnect(); return; }
     try {
       this.ws = new WebSocket(this.url);
     } catch (e) {
