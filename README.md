@@ -36,7 +36,7 @@ start-bridge.bat        :: 或 bridge\ 下 npm start
 环境变量：`MCP_PORT`（默认 7890）、`MCP_CALL_TIMEOUT`（默认 120000ms）、
 `MCP_TOKEN`（设了之后 /mcp 要求 `Authorization: Bearer`）、
 `MCP_EXT_TOKEN`（非扩展来源的 WS 客户端要求 `?token=`）。
-常驻可用 `pm2 start index.js --name browser-mcp` 或任务计划程序。
+`start-bridge.bat` 跑的是 `watchdog.mjs` 看门狗（崩了自动重启）；开机自启见文末「守护 / 自启」。
 
 ### 2. 加载扩展
 
@@ -98,6 +98,13 @@ cd bridge
 node smoke-test.mjs    :: 协议冒烟：initialize / tools/list / 未接扩展时的报错
 node full-test.mjs     :: 端到端 60 项检查（需 Chrome 已加载扩展），覆盖全部 37 个工具
 ```
+
+## 守护 / 自启
+
+bridge 是前台进程，被杀就断。仓库提供两层兜底：
+
+- `start-bridge.bat` / `node bridge/watchdog.mjs` —— 看门狗模式：崩溃自动重启（30 秒内 5 连崩会退避 60s），日志写 `bridge/bridge-supervisor.log`；检测到端口已被占用就自动退出，不会重复起
+- 开机自启（免管理员）：`powershell -ExecutionPolicy Bypass -File bridge\install-autostart.ps1` —— 在用户启动文件夹放一个隐藏启动项（`.lnk` → `run-hidden.vbs` → `watchdog.mjs`），下次登录自动拉起；卸载删掉那个 `.lnk` 即可
 
 `bridge/adv-tests/` 里是 15 组对抗性测试脚本（协议 fuzz、路径穿越、WS 冒充、竞态、压力等），改安全相关代码后可重跑对应脚本。
 
