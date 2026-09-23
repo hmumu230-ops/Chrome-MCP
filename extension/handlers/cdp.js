@@ -27,7 +27,7 @@ function newSession() {
 // Tabs where the user cancelled debugging via the infobar — don't auto-reattach.
 const banned = new Set();
 // Idle auto-detach: hide the "debugging" infobar after IDLE_MS without CDP calls.
-const IDLE_MS = 5 * 60 * 1000;
+const IDLE_MS = 60 * 1000;
 
 export function getSession(tabId) {
   return sessions.get(tabId);
