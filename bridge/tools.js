@@ -3,7 +3,10 @@
 
 const p = (pageIdRequired = true) => ({
   type: 'object',
-  properties: { pageId: { type: 'number', description: 'Chrome tab ID from list_pages' } },
+  // Accept number OR integer-string — several clients serialize the tab id as
+  // a string; the extension coerces it. Declaring only 'number' made strict
+  // clients fail schema validation before the call ever ran.
+  properties: { pageId: { type: ['number', 'string'], description: 'Chrome tab ID from list_pages (integer; string form accepted)' } },
   required: pageIdRequired ? ['pageId'] : [],
   additionalProperties: true,
 });
@@ -78,8 +81,9 @@ export const TOOLS = [
     inputSchema: withProps({
       function: { type: 'string', description: 'JS function declaration, e.g. () => document.title' },
       args: { type: 'array', items: { type: 'string' }, description: 'Element uids to pass as arguments' },
+      frameId: { type: 'number', description: 'Run inside a specific iframe (frameId from take_snapshot; default: main frame)' },
       dialogAction: { type: 'string', description: '"accept", "dismiss", or prompt text to auto-handle dialogs' },
-      timeout: { type: 'number', description: 'ms cap on the call (default 30000) — page code keeps running if it fires' },
+      timeout: { type: 'number', description: 'ms cap on the call (default 30000). On timeout the page-side script is NOT cancelled — it keeps running; only the wait returns' },
       filePath,
     }, ['function']),
   },

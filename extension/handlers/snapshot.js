@@ -1,6 +1,6 @@
 // Snapshot / screenshot / script evaluation tools.
 import { ensureLib, runInPage, setFrameMap, frameFor, checkUid } from './util.js';
-import { ensureDebugger, cdp, setPendingDialogAction } from './cdp.js';
+import { ensureDebugger, cdp, setPendingDialogAction, withRenderedTab, thawState, needsThaw } from './cdp.js';
 
 // webNavigation frameIds and CDP frameIds are different namespaces — locate
 // a child frame in Page.getFrameTree output by its URL.
@@ -13,6 +13,9 @@ function findCdpFrame(node, url) {
   }
   return null;
 }
+
+// Capture APIs hang against a minimized window's dead compositor — restored
+// via unminimizeWindow() from util.js (shared with save_pdf).
 
 export const snapshotTools = {
   async take_snapshot({ pageId, verbose }) {
@@ -59,6 +62,11 @@ export const snapshotTools = {
     const shot = (base64, mime) => filePath
       ? { file: { path: filePath, content: base64, base64: true } }
       : { image: { base64, mimeType: mime } };
+    // Capture needs a painted tab in a visible window — never-rendered
+    // background tabs hang captureScreenshot forever (and headed Chrome
+    // rejects fromSurface:false). withRenderedTab activates/unminimizes,
+    // then restores the previous tab/window state.
+    return withRenderedTab(pageId, async () => {
     // Element or full-page shots go through CDP for clip control.
     if (uid || fullPage) {
       await ensureLib(pageId);
@@ -111,14 +119,9 @@ export const snapshotTools = {
           const { data } = await cap({}, 12000);
           return fin(data);
         } catch (e1) {
-          try {
-            const { data } = await cap({ fromSurface: false }, 12000);
-            return fin(data);
-          } catch (e2) {
-            if (!fullPage || !/CDP timeout/.test(String(e2 && e2.message || e2))) {
-              // Don't mask the primary failure behind the fallback's error.
-              throw new Error('screenshot failed: ' + (e && e.message || e) + '; retries: ' + (e2 && e2.message || e2));
-            }
+          if (!fullPage || !/CDP timeout/.test(String(e1 && e1.message || e1))) {
+            // Don't mask the primary failure behind the fallback's error.
+            throw new Error('screenshot failed: ' + (e && e.message || e) + '; retry: ' + (e1 && e1.message || e1));
           }
         }
         // Last resort for fullPage: grow viewport to content height, shoot, restore.
@@ -127,7 +130,7 @@ export const snapshotTools = {
           deviceScaleFactor: 1, mobile: false,
         });
         try {
-          const { data } = await cdp(pageId, 'Page.captureScreenshot', { format: fmt, quality: fmt === 'png' ? undefined : quality, fromSurface: false });
+          const { data } = await cdp(pageId, 'Page.captureScreenshot', { format: fmt, quality: fmt === 'png' ? undefined : quality });
           return shot(data, 'image/' + fmt);
         } finally {
           await cdp(pageId, 'Emulation.clearDeviceMetricsOverride', {}).catch(() => {});
@@ -145,18 +148,12 @@ export const snapshotTools = {
       } catch (e) {
         if (!/CDP timeout/.test(String(e && e.message || e))) throw e;
         // First capture warms the occluded compositor — same-params retry
-        // usually succeeds; fromSurface:false is the last resort (unsupported
-        // on some headed builds, kept for platforms where it works).
+        // usually succeeds.
         try {
           const { data } = await cdp(pageId, 'Page.captureScreenshot', { format: fmt, quality: fmt === 'png' ? undefined : quality }, 12000);
           return shot(data, 'image/' + fmt);
         } catch (e1) {
-          try {
-            const { data } = await cdp(pageId, 'Page.captureScreenshot', { format: fmt, quality: fmt === 'png' ? undefined : quality, fromSurface: false }, 12000);
-            return shot(data, 'image/' + fmt);
-          } catch (e2) {
-            throw new Error('screenshot failed: ' + (e && e.message || e) + '; retries: ' + (e2 && e2.message || e2));
-          }
+          throw new Error('screenshot failed: ' + (e && e.message || e) + '; retry: ' + (e1 && e1.message || e1));
         }
       }
     }
@@ -167,17 +164,12 @@ export const snapshotTools = {
       ]);
       return shot(dataUrl.split(',')[1], fmt === 'jpeg' ? 'image/jpeg' : 'image/png');
     } catch (e) {
-      // captureVisibleTab can hang on occluded/minimized windows — retry via
-      // the debugger (compositor warmup), then the surface-less path.
+      // captureVisibleTab can still fail on occluded windows — retry via CDP.
       await ensureDebugger(pageId, ['Page']);
-      try {
-        const { data } = await cdp(pageId, 'Page.captureScreenshot', { format: fmt, quality: fmt === 'png' ? undefined : quality }, 12000);
-        return shot(data, 'image/' + fmt);
-      } catch {
-        const { data } = await cdp(pageId, 'Page.captureScreenshot', { format: fmt, quality: fmt === 'png' ? undefined : quality, fromSurface: false }, 12000);
-        return shot(data, 'image/' + fmt);
-      }
+      const { data } = await cdp(pageId, 'Page.captureScreenshot', { format: fmt, quality: fmt === 'png' ? undefined : quality }, 12000);
+      return shot(data, 'image/' + fmt);
     }
+    });
   },
 
   async evaluate_script({ pageId, function: fnSrc, args, frameId, dialogAction, filePath, timeout }) {
@@ -224,7 +216,7 @@ export const snapshotTools = {
       // A never-resolving promise or while(1) would otherwise pin the call to
       // the 120s bridge cap (and while(1) wedges the renderer regardless).
       const evalMs = Math.max(1000, Math.min(Number(timeout) || 30000, 120000));
-      const [r] = await Promise.race([
+      const doEval = () => Promise.race([
         chrome.scripting.executeScript({
         target, world: 'MAIN',
         func: (src, toks) => {
@@ -269,8 +261,25 @@ export const snapshotTools = {
         },
         args: [fnSrc, toks.length ? toks : null],
         }),
-        new Promise((_, rej) => setTimeout(() => rej(new Error(`evaluate_script timeout (${evalMs}ms) — page keeps running`)), evalMs)),
+        new Promise((_, rej) => setTimeout(() => rej(new Error(`evaluate_script timeout (${evalMs}ms) — page keeps running; the script is NOT cancelled and may still be running — retry with a larger timeout if it is legitimately slow`)), evalMs)),
       ]);
+      // Frozen/minimized-window tabs queue executeScript forever. Keep ONE
+      // pending promise — on timeout, if the tab state says the hang is
+      // environmental, activate the tab and await THE SAME promise (no
+      // double-injection of the user's script).
+      const evalPromise = doEval();
+      evalPromise.catch(() => {}); // rejection is consumed by the races below
+      const evalTimeout = (ms, tag) => new Promise((_, rej) => setTimeout(() => rej(new Error(tag || `evaluate_script timeout (${evalMs}ms) — page keeps running; the script is NOT cancelled and may still be running — retry with a larger timeout if it is legitimately slow`)), ms));
+      let r;
+      try {
+        [r] = await Promise.race([evalPromise, evalTimeout(Math.min(evalMs, 15000), 'probe-timeout')]);
+      } catch (e) {
+        if (e.message !== 'probe-timeout') throw e;
+        // 15s without ANY response: on a healthy tab the script is slow, on a
+        // frozen tab the IPC is still queued. Awaiting THE SAME promise inside
+        // withRenderedTab covers both — no double-injection either way.
+        [r] = await withRenderedTab(pageId, () => Promise.race([evalPromise, evalTimeout(Math.max(evalMs - 15000, 5000))]));
+      }
       if (r && r.error) throw new Error(String(r.error.message || r.error));
       if (!r) throw new Error('no result from page');
       const out = r.result;

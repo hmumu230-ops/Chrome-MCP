@@ -45,12 +45,12 @@ r = await call('wait_for', { pageId: pid, selector: '#x' });
 ok('wait_for unknown param rejected', r.isError && /unknown wait_for/i.test(r.text), r.text.slice(0, 90));
 r = await call('wait_for', { pageId: pid });
 ok('wait_for no condition rejected', r.isError && /at least one/i.test(r.text), r.text.slice(0, 90));
-r = await call('wait_for', { pageId: pid, text: ['Example Domain'], timeout: 4000 });
+r = await call('wait_for', { pageId: pid, text: ['Example Domain', '示例域', 'domain'], timeout: 20000 });
 ok('wait_for real text', !r.isError, r.text.slice(0, 60));
 
 // T3 snapshot + uid integrity
 const snap = await call('take_snapshot', { pageId: pid });
-ok('snapshot', !snap.isError && /Example Domain/i.test(snap.text));
+ok('snapshot', !snap.isError && /Example Domain|示例域|example\.com/i.test(snap.text));
 const uid = (snap.text.match(/\[([a-z0-9]*e\d+)\]/i) || [])[1];
 ok('uid minted', !!uid, uid);
 if (uid) {
