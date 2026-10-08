@@ -65,7 +65,7 @@ r = await call('new_page', { url: 'https://example.com/' });
 const pageId = jsonOf(r)?.pageId ?? jsonOf(r)?.id ?? jsonOf(r)?.tabId;
 check('new_page', Number.isInteger(pageId), 'pageId=' + pageId);
 
-r = await call('wait_for', { pageId, text: ['Example Domain'], timeout: 15000 });
+r = await call('wait_for', { pageId, text: ['Example Domain', '示例域', 'domain'], timeout: 15000 });
 check('wait_for text', !r.error, r.error || 'found');
 
 r = await call('select_page', { pageId, bringToFront: true });

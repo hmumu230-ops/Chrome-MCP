@@ -8,6 +8,62 @@
 
 const sessions = new Map(); // tabId -> session
 
+// Page.captureScreenshot/printToPDF need a live compositor frame, which
+// requires (a) a non-minimized window and (b) a tab that has painted — a
+// background tab that never rendered makes captureScreenshot wait for a frame
+// forever (CDP timeout). fromSurface:false is NOT an alternative: headed
+// Chrome rejects it outright (-32000 "Only screenshots from surface").
+// So: unminimize the window if needed, activate the tab briefly, run fn(),
+// then put everything back exactly as it was.
+// Probe the tab/window state that decides whether executeScript/CDP can even
+// reach the renderer: frozen or discarded tabs and minimized-window tabs
+// queue IPC forever. Returns {} when the tab can't be inspected.
+export async function thawState(tabId) {
+  try {
+    const t = await chrome.tabs.get(tabId);
+    const w = await chrome.windows.get(t.windowId);
+    return { frozen: t.frozen, discarded: t.discarded, active: t.active, status: t.status, win: w.state };
+  } catch { return {}; }
+}
+export const needsThaw = (s) => s.frozen === true || !!s.discarded || s.win === 'minimized';
+
+export async function withRenderedTab(tabId, fn) {
+  let prev = null, wasMin = false, winId = null;
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    winId = tab.windowId;
+    const win = await chrome.windows.get(winId);
+    wasMin = win.state === 'minimized';
+    if (wasMin) {
+      await chrome.windows.update(winId, { state: 'normal' });
+      // Tab ops are rejected while the window is mid-restore — wait until the
+      // transition actually completes before touching tabs.
+      for (let i = 0; i < 25; i++) {
+        await new Promise(r => setTimeout(r, 200));
+        const w = await chrome.windows.get(winId).catch(() => null);
+        if (!w || w.state !== 'minimized') break;
+      }
+    }
+    if (!tab.active) {
+      const [p] = await chrome.tabs.query({ windowId: winId, active: true });
+      prev = p && p.id !== tabId ? p : null;
+      await chrome.tabs.update(tabId, { active: true });
+      // Verify activation landed (retry once — restore races are real).
+      const t2 = await chrome.tabs.get(tabId).catch(() => null);
+      if (!t2 || !t2.active) {
+        await new Promise(r => setTimeout(r, 300));
+        await chrome.tabs.update(tabId, { active: true }).catch(() => {});
+      }
+    }
+    if (wasMin || !tab.active) await new Promise(r => setTimeout(r, 800)); // compositor warmup
+  } catch {}
+  try { return await fn(); }
+  finally {
+    if (prev) await chrome.tabs.update(prev.id, { active: true }).catch(() => {});
+    if (wasMin) await chrome.windows.update(winId, { state: 'minimized' }).catch(() => {});
+  }
+}
+
 const NO_ENABLE = new Set(['Input', 'IO', 'Target', 'Browser', 'Inspector', 'Emulation', 'Tracing']);
 
 const MAX_NET = 2000;
@@ -48,13 +104,23 @@ export function hasOpenDialog(tabId) {
 export async function cdp(tabId, method, params = {}, timeoutMs = 30000) {
   const s = sessions.get(tabId);
   if (s) touch(s, tabId);
-  // chrome.debugger.sendCommand can hang forever on some commands (e.g.
-  // Page.captureScreenshot with captureBeyondViewport on some builds) —
-  // race it with a timeout so the tool fails instead of wedging the call.
-  return await Promise.race([
-    chrome.debugger.sendCommand({ tabId }, method, params),
-    new Promise((_, rej) => setTimeout(() => rej(new Error(`CDP timeout: ${method}`)), timeoutMs)),
-  ]);
+  // chrome.debugger.sendCommand can hang forever — on some commands (e.g.
+  // Page.captureScreenshot) AND on frozen/minimized renderers where the IPC
+  // just queues. Race a timeout; if it fires, activate the tab and await the
+  // SAME pending command (queued IPC delivers once the renderer thaws).
+  const cmd = chrome.debugger.sendCommand({ tabId }, method, params);
+  cmd.catch(() => {}); // consumed by the races below
+  const timeout = (ms) => new Promise((_, rej) => setTimeout(() => rej(new Error(`CDP timeout: ${method}`)), ms));
+  const state = await thawState(tabId);
+  if (needsThaw(state)) {
+    return withRenderedTab(tabId, () => Promise.race([cmd, timeout(timeoutMs)]));
+  }
+  try {
+    return await Promise.race([cmd, timeout(Math.min(timeoutMs, 15000))]);
+  } catch (e) {
+    if (!/CDP timeout/.test(e.message)) throw e;
+    return withRenderedTab(tabId, () => Promise.race([cmd, timeout(timeoutMs)]));
+  }
 }
 
 function touch(s, tabId) {
@@ -587,14 +653,18 @@ export const cdpTools = {
   // a real CDP pipe (--remote-debugging-port), not the extension debugger.
 
   async save_pdf({ pageId, filePath, landscape, scale, printBackground }) {
-    await ensureDebugger(pageId, ['Page']);
-    const { data } = await cdp(pageId, 'Page.printToPDF', {
-      landscape: !!landscape,
-      scale: scale || 1,
-      printBackground: printBackground !== false,
-      transferMode: 'ReturnAsBase64',
+    // printToPDF stalls on a minimized window / never-painted tab — activate
+    // inside withRenderedTab (restores the previous state afterwards).
+    return withRenderedTab(pageId, async () => {
+      await ensureDebugger(pageId, ['Page']);
+      const { data } = await cdp(pageId, 'Page.printToPDF', {
+        landscape: !!landscape,
+        scale: scale || 1,
+        printBackground: printBackground !== false,
+        transferMode: 'ReturnAsBase64',
+      }, 60000); // large pages legitimately print slowly — don't ride the default timeout
+      return { file: filePath ? { path: filePath, content: data, base64: true } : undefined, bytes: data.length * 3 / 4 };
     });
-    return { file: filePath ? { path: filePath, content: data, base64: true } : undefined, bytes: data.length * 3 / 4 };
   },
 
   async detach_debugger({ pageId }) {

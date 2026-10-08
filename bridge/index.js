@@ -357,6 +357,7 @@ function createMcpServer() {
       const data = await callExtension(name, args || {});
       return formatResult(data);
     } catch (e) {
+      console.log(`[bridge] call error ${name}: ${e.message}`);
       return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
     }
   });
@@ -435,7 +436,19 @@ const httpServer = http.createServer(async (req, res) => {
         // Notification-style initialize (no id): the client would never learn
         // the session id — the session leaks until TTL. Reject instead.
         if (body.id === undefined || body.id === null) { res.writeHead(400).end('initialize requires an id'); return; }
-        if (transports.size >= MAX_SESSIONS) { res.writeHead(503).end('too many sessions'); return; }
+        if (transports.size >= MAX_SESSIONS) {
+          // Evict the least-recently-used session instead of 503 — poller and
+          // multi-agent clients churn session ids, and a stale entry shouldn't
+          // block a real initialize for the TTL duration.
+          let oldest = null, oldestSeen = Infinity;
+          for (const [id, t] of transports) if (t.lastSeen < oldestSeen) { oldestSeen = t.lastSeen; oldest = id; }
+          if (oldest) {
+            const t = transports.get(oldest);
+            transports.delete(oldest);
+            if (t.transport) t.transport.close().catch(() => {});
+            console.log('[bridge] evicted LRU session ' + oldest.slice(0, 8) + ' (pool full)');
+          }
+        }
         const entry = { transport: null, lastSeen: Date.now() };
         const t = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),

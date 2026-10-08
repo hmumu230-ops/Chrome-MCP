@@ -1,5 +1,6 @@
 // Tab / page management tools — chrome.tabs + chrome.windows APIs.
-import { ensureDebugger, cdp } from './cdp.js';
+import { ensureDebugger, cdp, withRenderedTab } from './cdp.js';
+import { execScript } from './util.js';
 
 async function getTab(tabId) {
   try { return await chrome.tabs.get(tabId); }
@@ -80,7 +81,7 @@ export const tabTools = {
         // own session history first; restricted pages fall back to CDP's
         // navigation-history list (what DevTools' back button uses).
         try {
-          const [r] = await chrome.scripting.executeScript({
+          const [r] = await execScript({
             target: { tabId: pageId },
             func: (d) => {
               try {
@@ -144,31 +145,44 @@ export const tabTools = {
     if (!text && !textGone && !time) throw new Error('wait_for needs at least one condition: text, textGone, or time');
     if (time) { await new Promise(r => setTimeout(r, Math.min(time, 60000))); }
     if (!text && !textGone) return { waited: time || 0 };
-    const deadline = Date.now() + Math.min(Number(timeout) || 15000, 120000);
-    let lastErr = null, errStreak = 0;
-    while (Date.now() < deadline) {
-      try {
-        const frames = await chrome.scripting.executeScript({
-          target: { tabId: pageId, allFrames: true },
-          func: (texts, gone) => {
-            const body = document.body ? document.body.innerText : '';
-            const has = (arr) => !arr || !arr.length || arr.some(t => body.includes(t));
-            const missing = (arr) => !arr || !arr.length || arr.every(t => !body.includes(t));
-            return has(texts) && missing(gone);
-          },
-          args: [text || null, textGone || null],
-        });
-        errStreak = 0;
-        // Text in any frame counts (matches chrome-devtools-mcp page-wide semantics).
-        if (frames.some(r => r && r.result)) return { pageId, found: true };
-      } catch (e) {
-        // Injection keeps failing (dead tab, chrome:// page) → don't burn the
-        // whole timeout on an impossible wait.
-        lastErr = e;
-        if (++errStreak >= 3) throw new Error('cannot poll page: ' + (e && e.message || e));
+    const poll = async () => {
+      // +20s slack over the caller's timeout: execScript may spend ~16s
+      // thawing a frozen renderer. Deadline is per-invocation — an activation
+      // retry gets a fresh budget.
+      const deadline = Date.now() + Math.min(Number(timeout) || 15000, 120000) + 20000;
+      let lastErr = null, errStreak = 0;
+      while (Date.now() < deadline) {
+        try {
+          const frames = await execScript({
+            target: { tabId: pageId, allFrames: true },
+            func: (texts, gone) => {
+              const body = document.body ? document.body.innerText : '';
+              const has = (arr) => !arr || !arr.length || arr.some(t => body.includes(t));
+              const missing = (arr) => !arr || !arr.length || arr.every(t => !body.includes(t));
+              return has(texts) && missing(gone);
+            },
+            args: [text || null, textGone || null],
+          });
+          errStreak = 0;
+          // Text in any frame counts (matches chrome-devtools-mcp page-wide semantics).
+          if (frames.some(r => r && r.result)) return { pageId, found: true };
+        } catch (e) {
+          lastErr = e;
+          // Frozen renderer → bail immediately; the whole poll reruns with
+          // the tab activated (each execScript would otherwise burn ~16s).
+          if (/unresponsive/.test(String(e && e.message || e))) throw e;
+          // Injection keeps failing (dead tab, chrome:// page) → don't burn the
+          // whole timeout on an impossible wait.
+          if (++errStreak >= 3) throw new Error('cannot poll page: ' + (e && e.message || e));
+        }
+        await new Promise(r => setTimeout(r, 500));
       }
-      await new Promise(r => setTimeout(r, 500));
+      throw new Error('timeout waiting: ' + JSON.stringify({ text, textGone }));
+    };
+    try { return await poll(); }
+    catch (e) {
+      if (!/unresponsive/.test(String(e && e.message || e))) throw e;
+      return withRenderedTab(pageId, poll);
     }
-    throw new Error('timeout waiting: ' + JSON.stringify({ text, textGone }));
   },
 };

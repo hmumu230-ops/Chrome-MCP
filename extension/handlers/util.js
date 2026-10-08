@@ -1,5 +1,5 @@
 // Shared helpers for running code inside tabs.
-import { hasOpenDialog } from './cdp.js';
+import { hasOpenDialog, withRenderedTab, thawState, needsThaw } from './cdp.js';
 
 // uid -> frameId registry, per tab. Populated by take_snapshot; consulted by
 // element tools so uids inside (same- or cross-origin) iframes work.
@@ -34,11 +34,36 @@ export async function settle(tabId, timeoutMs = 3000) {
   await new Promise(r => setTimeout(r, 150));
 }
 
+// executeScript can hang indefinitely when the renderer is wedged (busy main
+// thread, mid-navigation, dialog opened without our debugger) — bound every
+// call so it fails below the bridge's 120s ceiling instead of eating it.
+export async function execScript(injection, timeoutMs = 45000) {
+  const tabId = injection.target && injection.target.tabId;
+  const state = tabId !== undefined ? await thawState(tabId) : {};
+  // ONE pending executeScript the whole way through — a queued IPC on a
+  // frozen renderer completes by itself once the tab activates, so we never
+  // inject twice.
+  const execPromise = chrome.scripting.executeScript(injection);
+  execPromise.catch(() => {}); // consumed by the races below
+  const timeout = (ms) => new Promise((_, rej) => setTimeout(() => rej(new Error(`page unresponsive (${ms}ms) — a dialog, navigation, or busy renderer may be blocking the page`)), ms));
+  if (tabId !== undefined && needsThaw(state)) {
+    return withRenderedTab(tabId, () => Promise.race([execPromise, timeout(timeoutMs)]));
+  }
+  try {
+    // Probe bound first: a silently-frozen tab (flag unreported) fails fast
+    // and we activate+await the same pending call instead of hanging 45s.
+    return await Promise.race([execPromise, timeout(Math.min(timeoutMs, 15000))]);
+  } catch (e) {
+    if (!/unresponsive/.test(e.message) || tabId === undefined) throw e;
+    return withRenderedTab(tabId, () => Promise.race([execPromise, timeout(timeoutMs)]));
+  }
+}
+
 // Inject the DOM helper library into every frame of the tab.
 // chrome.scripting with allFrames reaches cross-origin iframes too
 // (host_permissions <all_urls> is set in the manifest).
 export async function ensureLib(tabId) {
-  await chrome.scripting.executeScript({
+  await execScript({
     target: { tabId, allFrames: true },
     files: ['inject/dom.js'],
   });
@@ -67,24 +92,24 @@ function unwrapForFrame(d) {
 }
 
 // Run `func` in one frame (default: main frame, isolated world).
-export async function runInPage(tabId, func, args = [], frameId) {
+export async function runInPage(tabId, func, args = [], frameId, timeoutMs = 45000) {
   // executeScript queues behind a modal JS dialog — queued calls then fire
   // LATER against a changed page. Fail fast so the caller handles the dialog.
   if (hasOpenDialog(tabId)) throw new Error('a JavaScript dialog is open on this page — call handle_dialog first');
   const target = frameId !== undefined ? { tabId, frameIds: [frameId] } : { tabId };
-  const [r] = await chrome.scripting.executeScript({ target, func, args: cleanArgs(args), world: 'ISOLATED' });
+  const [r] = await execScript({ target, func, args: cleanArgs(args), world: 'ISOLATED' }, timeoutMs);
   if (!r) throw new Error('no result from page');
   if (r.error) throw new Error(String(r.error.message || r.error));
   return { data: unwrap(r.result), frameId: r.frameId };
 }
 
 // Run `func` in every frame; returns [{frameId, result|error}].
-export async function runInAllFrames(tabId, func, args = []) {
+export async function runInAllFrames(tabId, func, args = [], timeoutMs = 45000) {
   if (hasOpenDialog(tabId)) throw new Error('a JavaScript dialog is open on this page — call handle_dialog first');
-  const res = await chrome.scripting.executeScript({
+  const res = await execScript({
     target: { tabId, allFrames: true },
     func, args: cleanArgs(args), world: 'ISOLATED',
-  });
+  }, timeoutMs);
   return res.map(r => {
     const u = unwrapForFrame(r.result);
     return { frameId: r.frameId, result: u.result, error: u.error || (r.error ? String(r.error.message || r.error) : undefined) };

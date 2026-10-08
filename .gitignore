@@ -10,6 +10,8 @@ bridge/*.png
 
 extension/.bridge-token
 
+dist/
+
 # adversarial-test run artifacts (keep the .mjs scripts + REPORT.md files)
 bridge/adv-tests/**/*-results.*
 bridge/adv-tests/**/*log*.txt

@@ -21,7 +21,11 @@ const BRIDGE_WS = 'ws://127.0.0.1:7890/ws';
 async function dispatch(msg) {
   const fn = TOOLS[msg.tool];
   if (!fn) throw new Error('unknown tool: ' + msg.tool);
-  const data = await fn(msg.args || {});
+  const args = msg.args || {};
+  // Clients frequently send the tab id as a string — coerce integer-like
+  // values once here instead of every tool rejecting them.
+  if (typeof args.pageId === 'string' && /^\d{1,15}$/.test(args.pageId)) args.pageId = Number(args.pageId);
+  const data = await fn(args);
   const pageId = msg.args && msg.args.pageId;
   if (MUTATING.has(msg.tool) && pageId !== undefined && msg.tool !== 'navigate_page') {
     await settle(pageId).catch(() => {});
